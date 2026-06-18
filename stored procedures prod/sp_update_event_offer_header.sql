@@ -1,7 +1,7 @@
-CREATE OR REPLACE PROCEDURE public.sp_update_lecost_natavgcost(
-	IN p_offerid integer,
-	IN p_offerno integer,
-	OUT p_lowestedprice numeric)
+CREATE OR REPLACE PROCEDURE public.sp_update_event_offer_header(
+	IN p_offer_id integer,
+	IN p_offer_no integer,
+	IN p_offer_type_id integer)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE 
@@ -9,24 +9,20 @@ DECLARE
     v_startdate date;
     v_enddate date;
     v_country text;
-	v_channel text;
-	v_eventChannel text;
 BEGIN
 	  ------------------------------------------------------------------
     SELECT 
         eh."startDate", 
         eh."endDate", 
-        eh."country",
-		eh."channel"
+        eh."country"
     INTO 
         v_startdate, 
         v_enddate, 
-        v_country,
-		v_eventChannel
+        v_country
     FROM "tEventOffer" eoh
     JOIN "tEvent" eh ON eh."eventId" = eoh."eventId"
-    WHERE eoh."offerId" = p_offerid
-      AND eoh."offerNumber" = p_offerno
+    WHERE eoh."offerId" = p_offer_id
+      AND eoh."offerNumber" = p_offer_no
     LIMIT 1;
 
     ------------------------------------------------------------------
@@ -41,205 +37,495 @@ BEGIN
       AND v_startdate <= COALESCE((c."configvalue"->>'EndDate')::date, '9999-12-31')
     ORDER BY (c."configvalue"->>'StartDate')::date DESC
     LIMIT 1;
+    -- ======================================================
+    -- 1. Override savePercent & incrementalPercentage
+    -- ======================================================
+	IF p_offer_type_id = 6 THEN
+    WITH EventOfferDtlSummaryforAdvPriceForPCTOffRange  AS (
+         SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+        v_gst AS gst_value,
+		d."clearanceIndicator",
+       
+	   MIN(d."advertisedPriceGst")                 AS "advPrice",
+        MIN(d."calculatedSaveValue")        AS "saveValue",
+        MIN(d."everydayPriceGst")              AS "everydayPrice",
+        MIN(d."calculatedSavePercentage") AS "savePercent"
+		
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+    WHERE  (o."OfferTypeId" IN (6))
+	  AND d."offerNo" = p_offer_no
+	  AND d."offerId" = p_offer_id
+	  AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+    GROUP BY d."offerId", d."eventId", d."offerNo", d."clearanceIndicator"
+)
+UPDATE public."tEventOffer" AS o
+SET
+    -- Price + savings
+    "advertisedPrice"       = ROUND(s."advPrice" / (1 + s.gst_value), 2),
+    "advertisedPriceGst"    = ROUND(s."advPrice", 2),
+    "saveValue"             = ROUND(s."saveValue", 2),
+    "everydayPriceGst"      = ROUND(s."everydayPrice", 2),
+	"everydayPrice"         = ROUND(s."everydayPrice" / (1 + s.gst_value), 2),
+    "calculatedSavePercent" = ROUND(s."savePercent", 2)
+	
+FROM EventOfferDtlSummaryforAdvPriceForPCTOffRange s
+WHERE o."offerId" = s."offerId"
+  AND o."offerNumber" = s."offerNo";
 
-	SELECT (config."configvalue" ->> 'channel')
-	INTO v_channel
-	FROM "tConfig" config
-	WHERE config."configkey" = v_eventChannel
-   AND config."country" = v_country
-   AND config."configtype" = 'SalesType';
-    ----------------------------------------------------------------------
-    -- STEP 1 → UPDATE COSTS IN tEventOfferDetail
-    ----------------------------------------------------------------------
-    WITH data AS (
-        SELECT
-            d."sku",
-            d."offerNo",
-            d."offerId",
-            s."averageMonthlySales",
-            (COALESCE(s."averageMonthlySales", 0) / 30.0) *
-            ((COALESCE(eoh."endDate", eh."endDate") -
-              COALESCE(eoh."startDate", eh."startDate")) + 1) AS calc_units,
+   WITH EventOfferDtlSummaryForPCTOffRange  AS (
+         SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+        v_gst AS gst_value,
 
-            v_channel AS "salesType",
-            v_gst AS gst_value,
+        -- Forecast metrics
+        ROUND(SUM(COALESCE(d."forecastCost", 0)), 2)             AS "forecastCost",
+        ROUND(SUM(COALESCE(d."forecastSales", 0)), 2)            AS "forecastSales",
+        ROUND(SUM(COALESCE(d."forecastTradeMargin$", 0)), 2)     AS "forecastTradeMargin$",
+         CASE
+            WHEN SUM(COALESCE(d."forecastSales", 0)) > 0
+            THEN ROUND(
+                (SUM(COALESCE(d."forecastTradeMargin$", 0)) / SUM(COALESCE(d."forecastSales", 0))) * 100,
+            2)
+            ELSE 0
+        END AS "forecastTradeMargin%",
+        -- Units and incremental
+        SUM(COALESCE(d."everydayUnits", 0))                      AS "everydayUnits",
+        SUM(COALESCE(d."categoryforecast", 0))                   AS "forecastUnits",
+        ROUND(SUM(COALESCE(d."incrementalTrade$", 0)), 2)        AS "incrementalTm$",
+        ROUND(SUM(COALESCE(d."incrementalSales", 0)), 2)         AS "incrementalSales$",
 
-            ppr."exchangeRatePrice",
-            ppr."priceControlPlan",
-            ppr."pricePoint2",
+        -- Scan support
+        SUM(COALESCE(d."scanSupport$", 0) * COALESCE(d."categoryforecast", 0)) AS "totalScanSupport$",
+        ROUND(SUM((COALESCE(d."LatestEffectiveCost", 0) * (COALESCE(d."scanSupport%", 0)/100) * COALESCE(d."categoryforecast", 0))),2) AS "totalScanSupport%"
+		
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+    WHERE  (o."OfferTypeId" IN (6))
+	  AND d."offerNo" = p_offer_no
+	  AND d."offerId" = p_offer_id
+    GROUP BY d."offerId", d."eventId", d."offerNo"
+)
+UPDATE public."tEventOffer" AS o
+SET
+    -- Forecast metrics
+    "forecastCost"          = s."forecastCost",
+    "forecastSales"         = s."forecastSales",
+    "forecastTradeMargin$"  = s."forecastTradeMargin$",
+    "forecastTradeMargin%"  = s."forecastTradeMargin%",
 
-            p."vendorCostPerEach",
-            p."nationalAvgCost",
+    -- Units and incremental
+    "everydayUnits"         = s."everydayUnits",
+    "forecastUnits"         = CAST(s."forecastUnits" AS int),
+    "incrementalTm$"        = s."incrementalTm$",
+    "incrementalSales$"     = s."incrementalSales$",
+    "incrementalUnits"      = CAST((s."forecastUnits" - s."everydayUnits") AS int),
 
-            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS sohStore,
-            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc
+    -- Scan supports
+    "totalScanSupport$"     = s."totalScanSupport$",
+    "totalScanSupport%"     = s."totalScanSupport%",
 
-        FROM "tEventOfferDetail" d
-        INNER JOIN "tEventOffer" eoh
-            ON d."offerId" = eoh."offerId"
-           AND d."offerNo" = eoh."offerNumber"
-        INNER JOIN "tEvent" eh
-            ON eh."eventId" = eoh."eventId"
-			INNER JOIN "tProducts" p
-            ON p."sku" = d."sku"
-        INNER JOIN "tPriceProductRules" ppr
-            ON ppr."sku" = d."sku"
-            AND ppr."company" = eh."company"
-            and ppr."supplierId"=p."supplierId"
-            and ppr."startDate"<=CURRENT_DATE and  ppr."endDate">=CURRENT_DATE
+    -- Supplier income (derived)
+    "totalSupplierIncome"   = s."totalScanSupport$" + s."totalScanSupport%" + COALESCE(o."spacePurchase", 0)
+FROM EventOfferDtlSummaryForPCTOffRange s
+WHERE o."offerId" = s."offerId"
+  AND o."offerNumber" = s."offerNo";
+	END IF;
 
-        
-		LEFT JOIN "tSalesY1" s
-            ON s."sku" = d."sku"
-           AND s."company" = eh."company"
-           AND s."salesType" = v_channel
-        LEFT JOIN "tInventory" inv
-            ON inv."sku" = d."sku"
-			and inv."company" in (eh."company",'12','52')
-        WHERE d."offerId" = p_offerId
-          AND d."offerNo" = p_offerNo
-        GROUP BY
-            d."sku", d."offerNo", d."offerId",
-            eoh."offerId", s."averageMonthlySales",
-            eoh."endDate", eoh."startDate",
-            eh."endDate", eh."startDate",
-            v_channel, v_gst,
-            ppr."exchangeRatePrice", ppr."priceControlPlan",
-            ppr."pricePoint2",
-            p."vendorCostPerEach", p."nationalAvgCost"
-    )
-    UPDATE "tEventOfferDetail" e
-    SET
-        "everydayUnits" = ROUND(d.calc_units),
+		IF p_offer_type_id = 14 THEN
 
-        "everydayPrice" =
-            ROUND(COALESCE( CASE d."salesType"
-                WHEN 'CASH' THEN d."exchangeRatePrice"
-                WHEN 'P&C'  THEN d."priceControlPlan"
-                WHEN 'ACC'  THEN d."pricePoint2"
-                ELSE 0 END, 0) / (1 + COALESCE(d.gst_value, 0)),2),
+WITH EventOfferDtlSummaryForStdRangePrice AS (
+    SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+        v_gst AS gst_value,
+        -- Forecast metrics
+        ROUND(SUM(COALESCE(d."forecastCost", 0)), 2)             AS "forecastCost",
+        ROUND(SUM(COALESCE(d."forecastSales", 0)), 2)            AS "forecastSales",
+        ROUND(SUM(COALESCE(d."forecastTradeMargin$", 0)), 2)     AS "forecastTradeMargin$",
+         CASE
+            WHEN SUM(COALESCE(d."forecastSales", 0)) > 0
+            THEN ROUND(
+                (SUM(COALESCE(d."forecastTradeMargin$", 0)) / SUM(COALESCE(d."forecastSales", 0))) * 100,
+            2)
+            ELSE 0
+        END AS "forecastTradeMargin%",
+		-- Units and incremental
+        SUM(COALESCE(d."everydayUnits", 0))                      AS "everydayUnits",
+        SUM(COALESCE(d."categoryforecast", 0))                   AS "forecastUnits",
+        ROUND(SUM(COALESCE(d."incrementalTrade$", 0)), 2)        AS "incrementalTm$",
+        ROUND(SUM(COALESCE(d."incrementalSales", 0)), 2)         AS "incrementalSales$",
 
-        "everydayPriceGst" = ROUND(COALESCE(
-            CASE d."salesType"
-                WHEN 'CASH' THEN d."exchangeRatePrice"
-                WHEN 'P&C'  THEN d."priceControlPlan"
-                WHEN 'ACC'  THEN d."pricePoint2"
-                ELSE 0 END, 0),2),
+        -- Scan support
+        SUM(COALESCE(d."scanSupport$", 0) * COALESCE(d."categoryforecast", 0)) AS "totalScanSupport$",
+        ROUND(SUM((COALESCE(d."LatestEffectiveCost", 0) * (COALESCE(d."scanSupport%", 0)/100) * COALESCE(d."categoryforecast", 0))),2) AS "totalScanSupport%"
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+    WHERE  (o."OfferTypeId" IN (14))
+	  AND d."offerNo" = p_offer_no
+	  AND d."offerId" = p_offer_id
+    GROUP BY d."offerId", d."eventId",   d."offerNo"
+)
+UPDATE public."tEventOffer" AS o
+SET
+    -- Forecast metrics
+    "forecastCost"          = s."forecastCost",
+    "forecastSales"         = s."forecastSales",
+    "forecastTradeMargin$"  = s."forecastTradeMargin$",
+    "forecastTradeMargin%"  = s."forecastTradeMargin%",
 
-        "everydayPriceGstSys" = ROUND(COALESCE(
-            CASE d."salesType"
-                WHEN 'CASH' THEN d."exchangeRatePrice"
-                WHEN 'P&C'  THEN d."priceControlPlan"
-                WHEN 'ACC'  THEN d."pricePoint2"
-                ELSE 0 END, 0),2),
+    -- Units and incremental
+    "everydayUnits"         = s."everydayUnits",
+    "forecastUnits"         = CAST(s."forecastUnits" AS int),
+    "incrementalTm$"        = s."incrementalTm$",
+    "incrementalSales$"     = s."incrementalSales$",
+    "incrementalUnits"      = CAST((s."forecastUnits" - s."everydayUnits") AS int),
+    -- Scan supports
+    "totalScanSupport$"     = s."totalScanSupport$",
+    "totalScanSupport%"     = s."totalScanSupport%",
 
-        "stockOnHandStore" = d.sohStore,
-        "stockOnHandDC"    = d.sohDc,
-		"gst" = d.gst_value,
-        "LatestEffectiveCost"      = ROUND(COALESCE(d."vendorCostPerEach", 0),2),
-        "nationalAverageCost"      = ROUND(COALESCE(d."nationalAvgCost", 0),2),
-        "categoryCost"             = ROUND(COALESCE(d."nationalAvgCost", 0),2),
+    -- Supplier income (derived)
+    "totalSupplierIncome"   = s."totalScanSupport$" + s."totalScanSupport%" + COALESCE(o."spacePurchase", 0)
+FROM EventOfferDtlSummaryForStdRangePrice s
+WHERE o."offerId" = s."offerId"
+  AND o."eventId" = s."eventId"
+  AND o."offerNumber" = s."offerNo";
 
-        "everydayExtendedUnitCost"  = ROUND(d.calc_units) * ROUND(COALESCE(d."nationalAvgCost", 0),2),
-        "everydayExtendedUnitSales" = ROUND(d.calc_units) * ROUND(COALESCE(
-                                              CASE d."salesType"
-                                                WHEN 'CASH' THEN d."exchangeRatePrice"
-                                                WHEN 'P&C'  THEN d."priceControlPlan"
-                                                WHEN 'ACC'  THEN d."pricePoint2"
-                                                ELSE 0 END, 0),2),
+  WITH EventOfferDtlSummaryforAdvPriceForStdRangePrice AS (
+    SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+        v_gst AS gst_value,
+		 d."clearanceIndicator",
+         -- Pricing logic as per C#
+        MAX(d."advertisedPriceGst")                 AS "advPrice",
+        MIN(d."calculatedSaveValue")        AS "saveValue",
+        MIN(d."everydayPriceGst")              AS "everydayPrice",
+        MIN(d."calculatedSavePercentage") AS "savePercent"
+		   
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+    WHERE  (o."OfferTypeId" IN (14))
+	  AND d."offerNo" = p_offer_no
+	  AND d."offerId" = p_offer_id
+	  AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+    GROUP BY d."offerId", d."eventId",  d."clearanceIndicator", d."offerNo"
+)
+UPDATE public."tEventOffer" AS o
+SET
+    -- Price + savings
+    "advertisedPrice"       = ROUND(s."advPrice" / (1 + s.gst_value), 2),
+    "advertisedPriceGst"    = ROUND(s."advPrice", 2),
+    "saveValue"             = ROUND(s."saveValue", 2),
+    "everydayPriceGst"      = ROUND(s."everydayPrice", 2),
+	"everydayPrice"         = ROUND(s."everydayPrice" / (1 + s.gst_value), 2),
+    "savePercent" = ROUND(s."savePercent", 2)
+	FROM EventOfferDtlSummaryforAdvPriceForStdRangePrice s
+WHERE o."offerId" = s."offerId"
+  AND o."eventId" = s."eventId"
+  AND o."offerNumber" = s."offerNo";
+	END IF;
+	
+		IF p_offer_type_id = 25 THEN
 
-        "extendedAdvertisedPrice" = ROUND(d.calc_units) * ROUND(COALESCE(e."advertisedPrice", 0),2),
-        "everydayCost" = ROUND(COALESCE(d."nationalAvgCost", 0),2),
-		"isCategoryForecastLocked" =
-									CASE 
-										WHEN e."isSkuEdited" IS FALSE OR e."isSkuEdited" IS NULL
-										THEN FALSE
-										ELSE e."isCategoryForecastLocked"
-									END
-    FROM data d
-    WHERE e."sku" = d."sku"
-      AND e."offerNo" = d."offerNo"
-      AND e."offerId" = d."offerId";
+	-- COMBO SKU LIST & STD RANGE PRICE
+WITH EventOfferDtlSummaryForComboList AS (
+    SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+        v_gst AS gst_value,
+        -- Forecast metrics
+        ROUND(SUM(COALESCE(d."forecastCost", 0)), 2)             AS "forecastCost",
+        ROUND(SUM(COALESCE(d."forecastSales", 0)), 2)            AS "forecastSales",
+        ROUND(SUM(COALESCE(d."forecastTradeMargin$", 0)), 2)     AS "forecastTradeMargin$",
+        CASE
+            WHEN SUM(COALESCE(d."forecastSales", 0)) > 0
+            THEN ROUND(
+                (SUM(COALESCE(d."forecastTradeMargin$", 0)) / SUM(COALESCE(d."forecastSales", 0))) * 100,
+            2)
+            ELSE 0
+        END AS "forecastTradeMargin%",
+        -- Units and incremental
+        SUM(COALESCE(d."everydayUnits", 0))                      AS "everydayUnits",
+        SUM(COALESCE(d."categoryforecast", 0))                   AS "forecastUnits",
+        ROUND(SUM(COALESCE(d."incrementalTrade$", 0)), 2)        AS "incrementalTm$",
+        ROUND(SUM(COALESCE(d."incrementalSales", 0)), 2)         AS "incrementalSales$",
 
-    ----------------------------------------------------------------------
-    -- STEP 2 → UPDATE IMAGE & COPY REFERENCES
-    ----------------------------------------------------------------------
-    WITH latest_offer AS (
-        SELECT 
-            o."imageReference",
-            o."copyReference"
-        FROM "tEventOffer" o
-        INNER JOIN "tEventOfferDetail" d
-            ON o."offerNumber" = d."offerNo"
-           AND o."offerId" = d."offerId"
-        INNER JOIN "tEvent" h
-            ON o."eventId" = h."eventId"
-        INNER JOIN "tEventOffer" curr_offer
-            ON curr_offer."offerId" = p_offerId
-           AND curr_offer."offerNumber" = p_offerNo
-        INNER JOIN "tEvent" curr
-            ON curr."eventId" = curr_offer."eventId"
-        WHERE 
-            h."eventId" <> curr."eventId"
-            AND d."sku" IN (
-                SELECT "sku" FROM "tEventOfferDetail"
-                WHERE "offerId" = p_offerId AND "offerNo" = p_offerNo
-            )
-            AND h."channel" = curr."channel"
-            AND h."company" = curr."company"
-            AND h."country" = curr."country"
-            AND h."eventType" = curr."eventType"
-            AND o."offerType" = curr_offer."offerType"
-            AND h."startDate" >= CURRENT_DATE - INTERVAL '13 months'
-            AND o."imageReference" IS NOT NULL
-            AND o."copyReference" IS NOT NULL
-        ORDER BY h."startDate" DESC
-        LIMIT 1
-    ),
-    latest_offer_by_name AS (
-        SELECT 
-            o."imageReference",
-            o."copyReference"
-        FROM "tEventOffer" o
-        INNER JOIN "tEvent" h
-            ON o."eventId" = h."eventId"
-        INNER JOIN "tEventOffer" curr_offer
-            ON curr_offer."offerId" = p_offerId
-           AND curr_offer."offerNumber" = p_offerNo
-        INNER JOIN "tEvent" curr
-            ON curr."eventId" = curr_offer."eventId"
-        WHERE 
-            h."channel" = curr."channel"
-            AND h."company" = curr."company"
-            AND h."country" = curr."country"
-            AND h."eventType" = curr."eventType"
-            AND o."offerType" = curr_offer."offerType"
-            AND o."offerName" = curr_offer."offerName"
-            AND o."offerType" IN ('COMBO', 'BUY X GET Y FREE')
-            AND h."startDate" >= CURRENT_DATE - INTERVAL '13 months'
-            AND o."imageReference" IS NOT NULL
-            AND o."copyReference" IS NOT NULL
-        ORDER BY h."startDate" DESC
-        LIMIT 1
-    )
-    UPDATE "tEventOffer" o
-    SET 
-        "imageReference" = COALESCE(lo."imageReference", lon."imageReference"),
-        "copyReference"  = COALESCE(lo."copyReference", lon."copyReference")
-    FROM latest_offer lo
-    FULL JOIN latest_offer_by_name lon ON TRUE
-    WHERE o."offerId" = p_offerId
-      AND o."offerNumber" = p_offerNo
-      AND o."OfferTypeId" IN 
-        (1,3,4,5,13,17);
+        -- Scan support
+        SUM(COALESCE(d."scanSupport$", 0) * COALESCE(d."categoryforecast", 0)) AS "totalScanSupport$",
+        ROUND(SUM((COALESCE(d."LatestEffectiveCost", 0) * (COALESCE(d."scanSupport%", 0)/100) * COALESCE(d."categoryforecast", 0))),2) AS "totalScanSupport%"
+		   
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+    WHERE  (o."OfferTypeId" IN (25))
+	  AND d."offerNo" = p_offer_no
+	  AND d."offerId" = p_offer_id
+    GROUP BY d."offerId", d."eventId",   d."offerNo"
+)
+UPDATE public."tEventOffer" AS o
+SET
+    -- Forecast metrics
+    "forecastCost"          = s."forecastCost",
+    "forecastSales"         = s."forecastSales",
+    "forecastTradeMargin$"  = s."forecastTradeMargin$",
+    "forecastTradeMargin%"  = s."forecastTradeMargin%",
 
-	 SELECT MIN(COALESCE("everydayPriceGst", 0))
-    INTO p_lowestEdPrice
-    FROM "tEventOfferDetail"
-    WHERE "offerNo" = p_offerNo
-      AND "offerId" = p_offerId;
+    -- Units and incremental
+    "everydayUnits"         = s."everydayUnits",
+    "forecastUnits"         = CAST(s."forecastUnits" AS int),
+    "incrementalTm$"        = s."incrementalTm$",
+    "incrementalSales$"     = s."incrementalSales$",
+    "incrementalUnits"      = CAST((s."forecastUnits" - s."everydayUnits") AS int),
 
+    -- Scan supports
+    "totalScanSupport$"     = s."totalScanSupport$",
+    "totalScanSupport%"     = s."totalScanSupport%",
+    -- Supplier income (derived)
+    "totalSupplierIncome"   = s."totalScanSupport$" + s."totalScanSupport%" 
+FROM EventOfferDtlSummaryForComboList s
+WHERE o."offerId" = s."offerId"
+  AND o."eventId" = s."eventId"
+  AND o."offerNumber" = s."offerNo";
+
+  	-- COMBO SKU LIST 
+WITH EventOfferDtlSummaryForAdvPriceForComboList AS (
+    SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+		d."clearanceIndicator",
+        v_gst AS gst_value,
+          -- Pricing logic as per C#
+        MAX(d."advertisedPriceGst")                 AS "advPrice",
+        MIN(d."calculatedSaveValue")        AS "saveValue",
+        MIN(d."everydayPriceGst")              AS "everydayPrice",
+        MIN(d."calculatedSavePercentage") AS "savePercent"
+		   
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+    WHERE  (o."OfferTypeId" IN (25))
+	  AND d."offerNo" = p_offer_no
+	  AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+	  AND d."offerId" = p_offer_id
+    GROUP BY d."offerId", d."eventId",   d."clearanceIndicator",d."offerNo"
+)
+UPDATE public."tEventOffer" AS o
+SET
+
+    -- Price + savings
+    "advertisedPrice"       = ROUND(s."advPrice" / (1 + s.gst_value), 2),
+    "advertisedPriceGst"    = ROUND(s."advPrice", 2),
+    "saveValue"             = ROUND(s."saveValue", 2),
+    "everydayPriceGst"      = ROUND(s."everydayPrice", 2),
+	"everydayPrice"         = ROUND(s."everydayPrice" / (1 + s.gst_value), 2),
+    "savePercent" = ROUND(s."savePercent", 2)
+FROM EventOfferDtlSummaryForAdvPriceForComboList s
+WHERE o."offerId" = s."offerId"
+  AND o."eventId" = s."eventId"
+  AND o."offerNumber" = s."offerNo";
+	END IF;
+	
+	IF p_offer_type_id = 15 THEN
+	
+	  WITH EventOfferDtlSummaryForMultiBuySKUList AS (
+    SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+        v_gst AS gst_value,
+
+        -- Forecast metrics
+		ROUND(SUM(COALESCE(d."purchaseQuantity")),2) 			 AS "purchaseQuantity",
+        ROUND(SUM(COALESCE(d."forecastCost", 0)), 2)             AS "forecastCost",
+        ROUND(SUM(COALESCE(d."forecastSales", 0)), 2)            AS "forecastSales",
+        ROUND(SUM(COALESCE(d."forecastTradeMargin$", 0)), 2)     AS "forecastTradeMargin$",
+        CASE
+            WHEN SUM(COALESCE(d."forecastSales", 0)) > 0
+            THEN ROUND(
+                (SUM(COALESCE(d."forecastTradeMargin$", 0)) / SUM(COALESCE(d."forecastSales", 0))) * 100,
+            2)
+            ELSE 0
+        END AS "forecastTradeMargin%",
+        -- Units and incremental
+        SUM(COALESCE(d."everydayUnits", 0))                      AS "everydayUnits",
+        SUM(COALESCE(d."categoryforecast", 0))                   AS "forecastUnits",
+        ROUND(SUM(COALESCE(d."incrementalTrade$", 0)), 2)        AS "incrementalTm$",
+        ROUND(SUM(COALESCE(d."incrementalSales", 0)), 2)         AS "incrementalSales$",
+
+        -- Scan support
+        SUM(COALESCE(d."scanSupport$", 0) * COALESCE(d."categoryforecast", 0)) AS "totalScanSupport$",
+        ROUND(SUM((COALESCE(d."LatestEffectiveCost", 0) * (COALESCE(d."scanSupport%", 0)/100) * COALESCE(d."categoryforecast", 0))),2) AS "totalScanSupport%"
+		   
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+		
+    WHERE  (o."OfferTypeId" IN (15))
+	  AND d."offerNo" = p_offer_no
+	  AND d."offerId" = p_offer_id
+    GROUP BY d."offerId", d."eventId", d."offerNo"
+)
+UPDATE public."tEventOffer" AS o
+SET
+    -- Forecast metrics
+	"purchaseQuantity"		= s."purchaseQuantity",
+    "forecastCost"          = s."forecastCost",
+    "forecastSales"         = s."forecastSales",
+    "forecastTradeMargin$"  = s."forecastTradeMargin$",
+    "forecastTradeMargin%"  = s."forecastTradeMargin%",
+
+    -- Units and incremental
+    "everydayUnits"         = s."everydayUnits",
+    "forecastUnits"         = CAST(s."forecastUnits" AS int),
+    "incrementalTm$"        = s."incrementalTm$",
+    "incrementalSales$"     = s."incrementalSales$",
+    "incrementalUnits"      = CAST((s."forecastUnits" - s."everydayUnits") AS int),
+
+    -- Scan supports
+    "totalScanSupport$"     = s."totalScanSupport$",
+    "totalScanSupport%"     = s."totalScanSupport%",
+    -- Supplier income (derived)
+    "totalSupplierIncome"   = s."totalScanSupport$" + s."totalScanSupport%" + COALESCE(o."spacePurchase", 0)
+FROM EventOfferDtlSummaryForMultiBuySKUList s
+WHERE o."offerId" = s."offerId"
+  AND o."eventId" = s."eventId"
+  AND o."offerNumber" = s."offerNo";
+
+  	  WITH EventOfferDtlSummaryForAdvPriceForMultiBuySKUList AS (
+    SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+        v_gst AS gst_value,
+		d."clearanceIndicator",
+       -- Pricing logic as per C#
+        MAX(d."advertisedPriceGst")                 AS "advPrice",
+        MIN(d."calculatedSaveValue")        AS "saveValue",
+        MIN(d."everydayPriceGst")              AS "everydayPrice",
+        MIN(d."calculatedSavePercentage") AS "savePercent"
+		   
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+		
+    WHERE  (o."OfferTypeId" IN (15))
+	  AND d."offerNo" = p_offer_no
+	  AND d."offerId" = p_offer_id
+	 AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+    GROUP BY d."offerId", d."eventId", d."clearanceIndicator", d."offerNo"
+)
+UPDATE public."tEventOffer" AS o
+SET
+  
+
+    -- Price + savings
+    "advertisedPrice"       = ROUND(s."advPrice" / (1 + s.gst_value), 2),
+    "advertisedPriceGst"    = ROUND(s."advPrice", 2),
+        "saveValue"             = ROUND(s."saveValue", 2)* o."requiredQuantity",
+    "everydayPriceGst"      = ROUND(s."everydayPrice", 2),
+	"everydayPrice"         = ROUND(s."everydayPrice" / (1 + s.gst_value), 2),
+    "calculatedSavePercent" = ROUND(s."savePercent", 2)
+	
+FROM EventOfferDtlSummaryForAdvPriceForMultiBuySKUList s
+WHERE o."offerId" = s."offerId"
+  AND o."eventId" = s."eventId"
+  AND o."offerNumber" = s."offerNo";
+END IF;
+
+	IF p_offer_type_id = 23 THEN
+	
+
+ WITH EventOfferDtlSummaryForPriceOnlySKUList AS (
+    SELECT
+        d."offerId",
+        d."eventId",
+		d."offerNo",
+		v_gst AS gst_value,
+        -- Summed forecast values
+        ROUND(SUM(COALESCE(d."forecastCost", 0)), 2)              AS "forecastCost",
+        ROUND(SUM(COALESCE(d."forecastSales", 0)), 2)             AS "forecastSales",
+        ROUND(SUM(COALESCE(d."forecastTradeMargin$", 0)), 2)      AS "forecastTradeMargin$",
+        CASE
+            WHEN SUM(COALESCE(d."forecastSales", 0)) > 0
+            THEN ROUND(
+                (SUM(COALESCE(d."forecastTradeMargin$", 0)) / SUM(COALESCE(d."forecastSales", 0))) * 100,
+            2)
+            ELSE 0
+        END AS "forecastTradeMargin%",
+        ROUND(SUM(COALESCE(d."incrementalTrade$", 0)), 2)         AS "incrementalTm$",
+        ROUND(SUM(COALESCE(d."incrementalSales", 0)), 2)          AS "incrementalSales$",
+
+        -- Units and forecast
+        SUM(COALESCE(d."everydayUnits", 0))                       AS "everydayUnits",
+        SUM(COALESCE(d."categoryforecast", 0))                    AS "forecastUnits",
+
+        -- Scan supports
+        SUM(COALESCE(d."scanSupport$", 0) * COALESCE(d."categoryforecast", 0)) AS "totalScanSupport$",
+        ROUND(SUM((COALESCE(d."LatestEffectiveCost", 0) * (COALESCE(d."scanSupport%", 0)/100) * COALESCE(d."categoryforecast", 0))),2) AS "totalScanSupport%",
+        -- Pricing
+        MIN(d."everydayPriceGst")                       AS "everydayPrice",
+        MIN(d."advertisedPriceGst")                  AS "advPrice",
+        SUM(COALESCE(d."calculatedSaveValue", 0))                 AS "saveValue",
+		MIN(d."calculatedSavePercentage")                 AS "savePercent"
+		
+    FROM public."tEventOfferDetail" d
+    INNER JOIN public."tEventOffer" o
+        ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
+		   
+    WHERE  (o."OfferTypeId" IN (23))
+	  AND d."offerNo" = p_offer_no
+	  AND d."offerId" = p_offer_id
+    GROUP BY d."offerId", d."eventId", d."offerNo"
+)
+UPDATE public."tEventOffer" AS o
+SET
+    -- Forecast metrics
+    "forecastCost"          = s."forecastCost",
+    "forecastSales"         = s."forecastSales",
+    "forecastTradeMargin$"  = s."forecastTradeMargin$",
+    "forecastTradeMargin%"  = s."forecastTradeMargin%",
+
+    -- Units and incremental
+    "everydayUnits"         = s."everydayUnits",
+    "forecastUnits"         = CAST(s."forecastUnits" AS int),
+    "incrementalTm$"        = s."incrementalTm$",
+    "incrementalSales$"     = s."incrementalSales$",
+    "incrementalUnits"      = CAST((s."forecastUnits" - s."everydayUnits") AS int),
+
+    -- Scan supports
+    "totalScanSupport$"     = s."totalScanSupport$",
+    "totalScanSupport%"     = s."totalScanSupport%",
+
+    -- Price + savings
+    "advertisedPrice"       = ROUND(s."advPrice" / (1 + s.gst_value), 2),
+    "advertisedPriceGst"    = ROUND(s."advPrice", 2),
+    "saveValue"             = ROUND(s."saveValue", 2),
+	"savePercent"             = ROUND(s."savePercent", 2),
+    "everydayPriceGst"      = ROUND(s."everydayPrice", 2),
+	"everydayPrice"         = ROUND(s."everydayPrice" / (1 + s.gst_value), 2),
+
+    -- Supplier income (derived)
+    "totalSupplierIncome"   = s."totalScanSupport$" + s."totalScanSupport%" + COALESCE(o."spacePurchase", 0)
+FROM EventOfferDtlSummaryForPriceOnlySKUList s
+WHERE o."offerId" = s."offerId"
+  AND o."eventId" = s."eventId"
+  AND o."offerNumber" = s."offerNo";
+
+  
+END IF;
 END;
 $BODY$;
-ALTER PROCEDURE public.sp_update_lecost_natavgcost(IN p_offerid integer, IN p_offerno integer, OUT p_lowestedprice numeric)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
