@@ -1,3 +1,7 @@
+-- FUNCTION: public.get_display_partnos(integer)
+
+-- DROP FUNCTION IF EXISTS public.get_display_partnos(integer);
+
 CREATE OR REPLACE FUNCTION public.get_display_partnos(
 	p_offer_id integer)
     RETURNS text
@@ -12,11 +16,10 @@ BEGIN
     INTO v_partnos
     FROM public."tEventOfferDetail"
     WHERE "offerId" = p_offer_id
-      AND "displayIndicator" = TRUE;
+      AND "displayIndicator" = TRUE
+      AND "isSkuActive" = TRUE;
 
     RETURN v_partnos;
 END;
 $BODY$;
 
-ALTER FUNCTION public.get_display_partnos(p_offer_id integer)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

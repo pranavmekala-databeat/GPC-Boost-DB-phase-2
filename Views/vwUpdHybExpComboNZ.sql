@@ -1,8 +1,9 @@
--- View: public."vwUpdHybExpComboNZ"
+-- View: public.vwUpdHybExpComboNZ
 
 -- DROP VIEW public."vwUpdHybExpComboNZ";
 
-CREATE OR REPLACE VIEW public."vwUpdHybExpComboNZ" AS
+CREATE OR REPLACE VIEW public."vwUpdHybExpComboNZ"
+ AS
  SELECT DISTINCT concat('C', 'NZ', 'E', eoh_new."eventId", 'P', eoh_new.page, 'P',
         CASE
             WHEN eoh_new."pagePosition" = 0 THEN eoh_new."offerId"
@@ -53,10 +54,10 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpComboNZ" AS
         END AS "VALUE",
     eh_new."salesKeyword" AS "SALE_KEYWORDS"
    FROM "tEvent" eh_new
-     JOIN "tEventOffer" eoh_new ON eh_new."eventId" = eoh_new."eventId"
+     JOIN "tEventOffer" eoh_new ON eh_new."eventId" = eoh_new."eventId" and eoh_new."isOfferActive"=true
      JOIN "tOfferType" lbot_new ON upper(eoh_new."commercialOfferType"::text) = upper(lbot_new."offerType"::text) AND eh_new.country::text = lbot_new.country::text
      LEFT JOIN "tHybrisStickerText" lbhst_new ON eoh_new."hybrisStickerText"::text = lbhst_new."hybrisStickerText"::text AND eh_new.country::text = lbhst_new.country::text
   WHERE eh_new.locked = true AND COALESCE(eoh_new."isNotAvailableOnline", false) = false AND (lbot_new."offerTypeId" = ANY (ARRAY[3, 15, 25])) AND eoh_new."advertisedPrice" > 0::numeric AND "left"(eh_new."eventType"::text, 3) <> 'LOY'::text AND eh_new.country::text = 'NZ'::text AND NOT (eh_new."eventType"::text = 'Retail Catalogue'::text AND eoh_new."pagePosition" = 0);
 
-ALTER TABLE public."vwUpdHybExpComboNZ"
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
+
+

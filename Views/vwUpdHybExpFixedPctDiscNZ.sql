@@ -1,8 +1,9 @@
--- View: public."vwUpdHybExpFixedPctDiscNZ"
+-- View: public.vwUpdHybExpFixedPctDiscNZ
 
 -- DROP VIEW public."vwUpdHybExpFixedPctDiscNZ";
 
-CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscNZ" AS
+CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscNZ"
+ AS
  WITH base AS (
          SELECT eo."eventId" AS event_id,
             eo.page,
@@ -50,7 +51,7 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscNZ" AS
             max(eh."salesKeyword"::text) AS "SALE_KEYWORDS"
            FROM "tEvent" eh
              JOIN "tEventOffer" eo ON eh."eventId" = eo."eventId"
-             JOIN "tEventOfferDetail" eod ON eo."eventId" = eod."eventId" AND eo.page = eod.page AND eo."pagePosition" = eod."pagePosition" AND eo."offerId" = eod."offerId" AND eo."offerNumber" = eod."offerNo"
+             JOIN "tEventOfferDetail" eod ON eo."eventId" = eod."eventId" AND eo.page = eod.page AND eo."pagePosition" = eod."pagePosition" AND eo."offerId" = eod."offerId" AND eo."offerNumber" = eod."offerNo" and eod."isSkuActive"=true
              JOIN "tProducts" p ON eod.sku::text = p.sku::text
              JOIN "tOfferType" ot ON eo."commercialOfferType"::text = ot."offerType"::text AND eh.country::text = ot.country::text
              JOIN "tConfig" tc ON tc.configtype::text = 'COUNTRY'::text AND tc.configkey::text = 'NZ'::text
@@ -101,7 +102,7 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscNZ" AS
             max(eh."salesKeyword"::text) AS "SALE_KEYWORDS"
            FROM "tEvent" eh
              JOIN "tEventOffer" eo ON eh."eventId" = eo."eventId"
-             JOIN "tEventOfferDetail" eod ON eo."eventId" = eod."eventId" AND eo.page = eod.page AND eo."pagePosition" = eod."pagePosition" AND eo."offerId" = eod."offerId" AND eo."offerNumber" = eod."offerNo"
+             JOIN "tEventOfferDetail" eod ON eo."eventId" = eod."eventId" AND eo.page = eod.page AND eo."pagePosition" = eod."pagePosition" AND eo."offerId" = eod."offerId" AND eo."offerNumber" = eod."offerNo"  and eod."isSkuActive"=true
              JOIN "tProducts" p ON eod.sku::text = p.sku::text
              JOIN "tOfferType" ot ON eo."commercialOfferType"::text = ot."offerType"::text AND eh.country::text = ot.country::text
              JOIN "tConfig" tc ON tc.configtype::text = 'COUNTRY'::text AND tc.configkey::text = 'NZ'::text
@@ -158,7 +159,7 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscNZ" AS
             max(eh."salesKeyword"::text) AS "SALE_KEYWORDS"
            FROM "tEvent" eh
              JOIN "tEventOffer" eo ON eh."eventId" = eo."eventId"
-             JOIN "tEventOfferDetail" eod ON eo."eventId" = eod."eventId" AND eo.page = eod.page AND eo."pagePosition" = eod."pagePosition" AND eo."offerId" = eod."offerId" AND eo."offerNumber" = eod."offerNo"
+             JOIN "tEventOfferDetail" eod ON eo."eventId" = eod."eventId" AND eo.page = eod.page AND eo."pagePosition" = eod."pagePosition" AND eo."offerId" = eod."offerId" AND eo."offerNumber" = eod."offerNo"  and eod."isSkuActive"=true
              JOIN "tProducts" p ON eod.sku::text = p.sku::text
              JOIN "tOfferType" ot ON eo."commercialOfferType"::text = ot."offerType"::text AND eh.country::text = ot.country::text
              JOIN "tConfig" tc ON tc.configtype::text = 'COUNTRY'::text AND tc.configkey::text = 'NZ'::text
@@ -204,7 +205,7 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscNZ" AS
             max(eh."salesKeyword"::text) AS "SALE_KEYWORDS"
            FROM "tEvent" eh
              JOIN "tEventOffer" eo ON eh."eventId" = eo."eventId"
-             JOIN "tEventOfferDetail" eod ON eo."eventId" = eod."eventId" AND eo.page = eod.page AND eo."pagePosition" = eod."pagePosition" AND eo."offerId" = eod."offerId" AND eo."offerNumber" = eod."offerNo"
+             JOIN "tEventOfferDetail" eod ON eo."eventId" = eod."eventId" AND eo.page = eod.page AND eo."pagePosition" = eod."pagePosition" AND eo."offerId" = eod."offerId" AND eo."offerNumber" = eod."offerNo"  and eod."isSkuActive"=true
              JOIN "tProducts" p ON eod.sku::text = p.sku::text
              JOIN "tOfferType" ot ON eo."commercialOfferType"::text = ot."offerType"::text AND eh.country::text = ot.country::text
              JOIN "tConfig" tc ON tc.configtype::text = 'COUNTRY'::text AND tc.configkey::text = 'NZ'::text
@@ -384,5 +385,5 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscNZ" AS
     "SALE_KEYWORDS"
    FROM final_rows;
 
-ALTER TABLE public."vwUpdHybExpFixedPctDiscNZ"
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
+
+

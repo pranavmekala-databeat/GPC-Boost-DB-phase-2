@@ -1,5 +1,10 @@
-CREATE OR REPLACE PROCEDURE public.sp_tblprod_dpdt()
-LANGUAGE plpgsql
+-- PROCEDURE: public.sp_tblprod_dpdt()
+
+-- DROP PROCEDURE IF EXISTS public.sp_tblprod_dpdt();
+
+CREATE OR REPLACE PROCEDURE public.sp_tblprod_dpdt(
+	)
+LANGUAGE 'plpgsql'
 AS $BODY$
 DECLARE
     v_row_count INTEGER;
@@ -14,14 +19,14 @@ BEGIN
     VALUES ('sp_tblprod_dpdt', 'STARTED', v_start_time)
     RETURNING id INTO v_log_id;
 
-
     RAISE NOTICE 'Processing independent tables at %', v_timestamp;
-
 
     BEGIN
         --------------------------------------------------------------------
-        -- 1. DEDUP for tIicePartDesc_temp
+        -- 1. DEDUP for tIicePartDesc_temp and Truncate/Insert tIicePartDesc
         --------------------------------------------------------------------
+        IF EXISTS (SELECT 1 FROM public."tIicePartDesc_temp") THEN
+
         DELETE FROM public."tIicePartDesc_temp" t
         USING (
             SELECT "partId", MIN(ctid) AS keep_ctid
@@ -32,15 +37,13 @@ BEGIN
         WHERE t."partId" = dups."partId"
           AND t.ctid <> dups.keep_ctid;
 
-
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
         RAISE NOTICE 'tIicePartDesc_temp dedup removed % rows', v_row_count;
 
+        -- CHANGE: Truncate table instead of upsert
+        TRUNCATE TABLE public."tIicePartDesc";
 
-        --------------------------------------------------------------------
-        -- 2. UPSERT tIicePartDesc
-        --------------------------------------------------------------------
-        INSERT INTO public."tIicePartDesc" AS main (
+        INSERT INTO public."tIicePartDesc" (
             "partId", country, sku,
             "webPartDescription",
             "thumbnailImageName",
@@ -55,24 +58,22 @@ BEGIN
             t."baseImageName",
             t."marketingCopy",
             (NOW() AT TIME ZONE 'Australia/Sydney'), NULL
-        FROM public."tIicePartDesc_temp" t
-        ON CONFLICT ("partId", country)
-        DO UPDATE SET
-            sku = EXCLUDED.sku,
-            "webPartDescription" = EXCLUDED."webPartDescription",
-            "thumbnailImageName" = EXCLUDED."thumbnailImageName",
-            "baseImageName" = EXCLUDED."baseImageName",
-            "marketingCopy" = EXCLUDED."marketingCopy",
-            "updatedAt" = (NOW() AT TIME ZONE 'Australia/Sydney');
-
+        FROM public."tIicePartDesc_temp" t;
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
-        RAISE NOTICE 'tIicePartDesc upsert affected % rows', v_row_count;
-
+        RAISE NOTICE 'tIicePartDesc: % rows inserted', v_row_count;
+        ELSE
+            RAISE NOTICE 'tIicePartDesc_temp is empty - skipping';
+        END IF;
 
         --------------------------------------------------------------------
-        -- 3. UPSERT NationalAverageCost
+        -- 2. Truncate/Insert NationalAverageCost
         --------------------------------------------------------------------
+        IF EXISTS (SELECT 1 FROM public."tNationalAverageCost_temp") THEN
+
+        -- CHANGE: Truncate table instead of upsert
+        TRUNCATE TABLE public."tNationalAverageCost";
+
         INSERT INTO public."tNationalAverageCost" (
             country, sku, company,
             "effectiveFromDate", "effectiveToDate",
@@ -88,29 +89,22 @@ BEGIN
             t."generalProvision", t."importVariant",
             t."currencyGain", t.rebate, t."internalLoading",
             (NOW() AT TIME ZONE 'Australia/Sydney'), (NOW() AT TIME ZONE 'Australia/Sydney')
-        FROM public."tNationalAverageCost_temp" t
-        ON CONFLICT (sku, country)
-        DO UPDATE SET
-            company             = EXCLUDED.company,
-            "effectiveFromDate" = EXCLUDED."effectiveFromDate",
-            "effectiveToDate"   = EXCLUDED."effectiveToDate",
-            "nationalAverageCost" = EXCLUDED."nationalAverageCost",
-            "trueLandedCost"    = EXCLUDED."trueLandedCost",
-            "generalProvision"  = EXCLUDED."generalProvision",
-            "importVariant"     = EXCLUDED."importVariant",
-            "currencyGain"      = EXCLUDED."currencyGain",
-            rebate              = EXCLUDED.rebate,
-            "internalLoading"   = EXCLUDED."internalLoading",
-            "updatedAt"         = (NOW() AT TIME ZONE 'Australia/Sydney');
-
+        FROM public."tNationalAverageCost_temp" t;
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
-        RAISE NOTICE 'NationalAverageCost upsert affected % rows', v_row_count;
-
+        RAISE NOTICE 'NationalAverageCost: % rows inserted', v_row_count;
+        ELSE
+            RAISE NOTICE 'tNationalAverageCost_temp is empty - skipping';
+        END IF;
 
         --------------------------------------------------------------------
-        -- 4. UPSERT Supplier
+        -- 3. Truncate/Insert Supplier
         --------------------------------------------------------------------
+        IF EXISTS (SELECT 1 FROM public."tSupplier_temp") THEN
+
+        -- CHANGE: Truncate table instead of upsert
+        TRUNCATE TABLE public."tSupplier";
+
         INSERT INTO public."tSupplier" (
             "supplierId", country, "supplierName",
             "importIndicator", "createdDate", "termsCode",
@@ -123,25 +117,22 @@ BEGIN
             t."d365SupplierId", t."d365SupplierType",
             (NOW() AT TIME ZONE 'Australia/Sydney'), (NOW() AT TIME ZONE 'Australia/Sydney')
         FROM public."tSupplier_temp" t
-        WHERE COALESCE(TRIM(LOWER(t."supplierId")), '') NOT IN ('unknown', '*unknown*', '')
-        ON CONFLICT ("supplierId", country)
-        DO UPDATE SET
-            "supplierName"     = EXCLUDED."supplierName",
-            "importIndicator"  = EXCLUDED."importIndicator",
-            "createdDate"      = EXCLUDED."createdDate",
-            "termsCode"        = EXCLUDED."termsCode",
-            "d365SupplierId"   = EXCLUDED."d365SupplierId",
-            "d365SupplierType" = EXCLUDED."d365SupplierType",
-            "updatedAt"        = (NOW() AT TIME ZONE 'Australia/Sydney');
-
+        WHERE COALESCE(TRIM(LOWER(t."supplierId")), '') NOT IN ('unknown', '*unknown*', '');
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
-        RAISE NOTICE 'Supplier upsert affected % rows', v_row_count;
-
+        RAISE NOTICE 'Supplier: % rows inserted', v_row_count;
+        ELSE
+            RAISE NOTICE 'tSupplier_temp is empty - skipping';
+        END IF;
 
         --------------------------------------------------------------------
-        -- 5. UPSERT VendorItemDetail
+        -- 4. Truncate/Insert VendorItemDetail
         --------------------------------------------------------------------
+        IF EXISTS (SELECT 1 FROM public."tVendorItemDetail_temp") THEN
+
+        -- CHANGE: Truncate table instead of upsert
+        TRUNCATE TABLE public."tVendorItemDetail";
+
         INSERT INTO public."tVendorItemDetail" (
             "distributionCenter", "supplierId", sku,
             "latestEffectiveCost", "baseUnitOfMeasure",
@@ -159,29 +150,22 @@ BEGIN
             t."minimumOrderQuantity", t."orderMultiple",
             t."d365SupplierId", t."d365SupplierType",
             t.country, (NOW() AT TIME ZONE 'Australia/Sydney'), (NOW() AT TIME ZONE 'Australia/Sydney')
-        FROM public."tVendorItemDetail_temp" t
-        ON CONFLICT ("distributionCenter","supplierId",sku,country)
-        DO UPDATE SET
-            "latestEffectiveCost" = EXCLUDED."latestEffectiveCost",
-            "baseUnitOfMeasure" = EXCLUDED."baseUnitOfMeasure",
-            "purchaseUnitOfMeasure" = EXCLUDED."purchaseUnitOfMeasure",
-            "conversionFactor" = EXCLUDED."conversionFactor",
-            "deliveryNoteRequired" = EXCLUDED."deliveryNoteRequired",
-            "leadTime" = EXCLUDED."leadTime",
-            "minimumOrderQuantity" = EXCLUDED."minimumOrderQuantity",
-            "orderMultiple" = EXCLUDED."orderMultiple",
-            "d365SupplierId" = EXCLUDED."d365SupplierId",
-            "d365SupplierType" = EXCLUDED."d365SupplierType",
-            "updatedAt" = (NOW() AT TIME ZONE 'Australia/Sydney');
-
+        FROM public."tVendorItemDetail_temp" t;
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
-        RAISE NOTICE 'VendorItemDetail upsert affected % rows', v_row_count;
-
+        RAISE NOTICE 'VendorItemDetail: % rows inserted', v_row_count;
+        ELSE
+            RAISE NOTICE 'tVendorItemDetail_temp is empty - skipping';
+        END IF;
 
         --------------------------------------------------------------------
-        -- 6. UPSERT ItemClass
+        -- 5. Truncate/Insert ItemClass
         --------------------------------------------------------------------
+        IF EXISTS (SELECT 1 FROM public."tItemClass_temp") THEN
+
+        -- CHANGE: Truncate table instead of upsert
+        TRUNCATE TABLE public."tItemClass";
+
         INSERT INTO public."tItemClass" (
             "itemClass1","itemClass2","itemClass3","itemClass4",
             country,"merchandisingGroup","categoryManager",
@@ -195,27 +179,23 @@ BEGIN
             t."categoryAssistant",t."itemClass1Description",
             t."itemClass2Description",t."itemClass3Description",
             t."itemClass4Description",(NOW() AT TIME ZONE 'Australia/Sydney'),(NOW() AT TIME ZONE 'Australia/Sydney')
-        FROM public."tItemClass_temp" t
-        ON CONFLICT ("itemClass1","itemClass2","itemClass3","itemClass4",country)
-        DO UPDATE SET
-            "merchandisingGroup" = EXCLUDED."merchandisingGroup",
-            "categoryManager" = EXCLUDED."categoryManager",
-            "categoryAssistant" = EXCLUDED."categoryAssistant",
-            "itemClass1Description" = EXCLUDED."itemClass1Description",
-            "itemClass2Description" = EXCLUDED."itemClass2Description",
-            "itemClass3Description" = EXCLUDED."itemClass3Description",
-            "itemClass4Description" = EXCLUDED."itemClass4Description",
-            "updatedAt" = (NOW() AT TIME ZONE 'Australia/Sydney');
-
+        FROM public."tItemClass_temp" t;
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
-        RAISE NOTICE 'ItemClass upsert affected % rows', v_row_count;
-
+        RAISE NOTICE 'ItemClass: % rows inserted', v_row_count;
+        ELSE
+            RAISE NOTICE 'tItemClass_temp is empty - skipping';
+        END IF;
 
         --------------------------------------------------------------------
-        -- 7. UPSERT ItemLoadings
+        -- 6. Truncate/Insert ItemLoadings
         --------------------------------------------------------------------
-        INSERT INTO public."tItemLoadings" AS main (
+        IF EXISTS (SELECT 1 FROM public."tItemLoadings_temp") THEN
+
+        -- CHANGE: Truncate table instead of upsert
+        TRUNCATE TABLE public."tItemLoadings";
+
+        INSERT INTO public."tItemLoadings" (
             "supplierId", sku, "itemClass", country,
             "parameterType","loadingLevel","dateAdded","startDate",
             "percentageLoading","dollarLoading","createdAt","updatedAt"
@@ -225,25 +205,22 @@ BEGIN
             t."parameterType",t."loadingLevel",t."dateAdded",
             t."startDate",t."percentageLoading",t."dollarLoading",
             (NOW() AT TIME ZONE 'Australia/Sydney'),NULL
-        FROM public."tItemLoadings_temp" t
-        ON CONFLICT ("supplierId",sku,"itemClass",country)
-        DO UPDATE SET
-            "parameterType" = EXCLUDED."parameterType",
-            "loadingLevel" = EXCLUDED."loadingLevel",
-            "dateAdded" = EXCLUDED."dateAdded",
-            "startDate" = EXCLUDED."startDate",
-            "percentageLoading" = EXCLUDED."percentageLoading",
-            "dollarLoading" = EXCLUDED."dollarLoading",
-            "updatedAt" = (NOW() AT TIME ZONE 'Australia/Sydney');
-
+        FROM public."tItemLoadings_temp" t;
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
-        RAISE NOTICE 'ItemLoadings upsert affected % rows', v_row_count;
-
+        RAISE NOTICE 'ItemLoadings: % rows inserted', v_row_count;
+        ELSE
+            RAISE NOTICE 'tItemLoadings_temp is empty - skipping';
+        END IF;
 
         --------------------------------------------------------------------
-        -- 8. UPSERT ProductSupplierCost
+        -- 7. Truncate/Insert ProductSupplierCost
         --------------------------------------------------------------------
+        IF EXISTS (SELECT 1 FROM public."tProductSupplierCost_temp") THEN
+
+        -- CHANGE: Truncate table instead of upsert
+        TRUNCATE TABLE public."tProductSupplierCost";
+
         INSERT INTO public."tProductSupplierCost" (
             country,
             "supplierId",
@@ -291,35 +268,17 @@ BEGIN
             sku,
             CASE WHEN "sellTrigger" = 'Y' THEN 0 ELSE 1 END,
             "startDate" DESC,
-            "endDate" DESC
-        ON CONFLICT ("supplierId", sku)
-        DO UPDATE SET
-            country            = EXCLUDED.country,
-            "costLocation"     = EXCLUDED."costLocation",
-            "purchaseUOM"      = EXCLUDED."purchaseUOM",
-            "startDate"        = EXCLUDED."startDate",
-            "endDate"          = EXCLUDED."endDate",
-            "rapSellFromDate"  = EXCLUDED."rapSellFromDate",
-            "sellTrigger"      = EXCLUDED."sellTrigger",
-            "packageType"      = EXCLUDED."packageType",
-            "conversionFactor" = EXCLUDED."conversionFactor",
-            "fromQuantity"     = EXCLUDED."fromQuantity",
-            "toQuantity"       = EXCLUDED."toQuantity",
-            "baseCost"         = EXCLUDED."baseCost",
-            "discountAmount"   = EXCLUDED."discountAmount",
-            "purchaseUomCost"  = EXCLUDED."purchaseUomCost",
-            "costPerEach"      = EXCLUDED."costPerEach",
-            "updatedAt"        = (NOW() AT TIME ZONE 'Australia/Sydney');
-
+            "endDate" DESC;
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
-        RAISE NOTICE 'ProductSupplierCost upsert affected % rows', v_row_count;
-
+        RAISE NOTICE 'ProductSupplierCost: % rows inserted', v_row_count;
+        ELSE
+            RAISE NOTICE 'tProductSupplierCost_temp is empty - skipping';
+        END IF;
 
         -- Calculate duration and log successful completion
         v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
         v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000;
-
 
         UPDATE execution_log
         SET status = 'SUCCESS',
@@ -327,15 +286,12 @@ BEGIN
             duration_ms = v_duration_ms
         WHERE id = v_log_id;
 
-
         RAISE NOTICE 'Procedure completed successfully in % ms', v_duration_ms;
-
 
     EXCEPTION WHEN OTHERS THEN
         -- Log failure
         v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
         v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000;
-
 
         UPDATE execution_log
         SET status = 'FAILED',
@@ -343,13 +299,9 @@ BEGIN
             duration_ms = v_duration_ms
         WHERE id = v_log_id;
 
-
         RAISE WARNING 'Error occurred: %', SQLERRM;
         RAISE;
     END;
 
-
 END;
 $BODY$;
-ALTER PROCEDURE public.sp_tblprod_dpdt()
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

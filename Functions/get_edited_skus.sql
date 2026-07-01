@@ -1,3 +1,7 @@
+-- FUNCTION: public.get_edited_skus(integer, integer)
+
+-- DROP FUNCTION IF EXISTS public.get_edited_skus(integer, integer);
+
 CREATE OR REPLACE FUNCTION public.get_edited_skus(
 	p_offer_id integer,
 	p_offer_no integer)
@@ -14,11 +18,10 @@ BEGIN
     FROM "tEventOfferDetail"
     WHERE "offerId" = p_offer_id
       AND "offerNo" = p_offer_no
-      AND "isSkuEdited" = True;
+      AND "isSkuEdited" = True
+      AND "isSkuActive" =TRUE;
 
     RETURN v_skus;
 END;
 $BODY$;
 
-ALTER FUNCTION public.get_edited_skus(p_offer_id integer, p_offer_no integer)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

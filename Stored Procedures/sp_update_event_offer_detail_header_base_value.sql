@@ -1,9 +1,13 @@
+-- PROCEDURE: public.sp_update_event_offer_detail_header_base_value(integer, integer, integer, numeric)
+
+-- DROP PROCEDURE IF EXISTS public.sp_update_event_offer_detail_header_base_value(integer, integer, integer, numeric);
+
 CREATE OR REPLACE PROCEDURE public.sp_update_event_offer_detail_header_base_value(
 	IN p_offer_id integer,
 	IN p_offer_no integer,
 	IN p_offer_type_id integer,
 	IN p_space_purchase numeric)
-LANGUAGE plpgsql
+LANGUAGE 'plpgsql'
 AS $BODY$
 DECLARE 
     v_gst numeric;
@@ -856,5 +860,3 @@ WHERE o."offerId" = s."offerId"
 END IF;
 END;
 $BODY$;
-ALTER PROCEDURE public.sp_update_event_offer_detail_header_base_value(IN p_offer_id integer, IN p_offer_no integer, IN p_offer_type_id integer, IN p_space_purchase numeric)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

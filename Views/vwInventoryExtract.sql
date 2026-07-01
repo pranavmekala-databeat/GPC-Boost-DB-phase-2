@@ -92,6 +92,7 @@ CREATE OR REPLACE VIEW public."vwInventoryExtract" AS
              JOIN "tOfferType" ot ON upper(eo."commercialOfferType"::text) = upper(ot."offerType"::text) AND e.country::text = ot.country::text
              LEFT JOIN "tEventPage" ep ON eo."eventId" = ep."eventId" AND eo.page = ep.page
           WHERE ep."pageDescription" IS NULL OR ep."pageDescription"::text <> 'Tie Up'::text AND NOT (e."eventType"::text = 'Retail Catalogue'::text AND eo."pagePosition" = 0 AND (ep."pageDescription"::text <> ALL (ARRAY['Front Page'::character varying::text, 'Back Page'::character varying::text])))
+          AND ((e."status" IN ('Open', 'Locked') AND eo."isOfferActive" = TRUE AND eod."isSkuActive" = TRUE) OR (e."status" IN ('Completed', 'Cancelled')))
         ), ranked AS (
          SELECT b."EVENTID",
             b."PAGE",
@@ -227,5 +228,4 @@ CREATE OR REPLACE VIEW public."vwInventoryExtract" AS
   WHERE include_flag = 1
   ORDER BY "PAGE", "PAGEPOSN", "COMCATMAN", "COMOFFERIC1", "COMOFFERTYPE", "OFFERTYPE", "PARTNO";
 
-ALTER TABLE public."vwInventoryExtract"
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
+

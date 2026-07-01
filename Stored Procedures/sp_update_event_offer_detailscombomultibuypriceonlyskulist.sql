@@ -1,5 +1,10 @@
-CREATE OR REPLACE PROCEDURE public.sp_update_event_offer_detailscombomultibuypriceonlyskulist()
-LANGUAGE plpgsql
+-- PROCEDURE: public.sp_update_event_offer_detailscombomultibuypriceonlyskulist()
+
+-- DROP PROCEDURE IF EXISTS public.sp_update_event_offer_detailscombomultibuypriceonlyskulist();
+
+CREATE OR REPLACE PROCEDURE public.sp_update_event_offer_detailscombomultibuypriceonlyskulist(
+	)
+LANGUAGE 'plpgsql'
 AS $BODY$
 DECLARE
     v_start_time timestamptz;
@@ -22,13 +27,50 @@ BEGIN
 --===============================================================================================================
 
 --updateEventOfferDtlForComboList
- WITH updateEventOfferDtlForComboList AS (
+ WITH "pricelistDetail" AS (
+          SELECT
+              pld."sku",
+              pld."priceList",
+              pld."priceListPrice",
+              pld."startDate",
+              pld."country",
+              ROW_NUMBER() OVER (
+                  PARTITION BY pld."sku",pld."country",
+                  CASE
+                      WHEN pld."priceList" = '050' THEN 'clearance'
+                      WHEN pld."priceList" IN ('390','419','824','343','446','241') THEN 'au_primary'
+                      WHEN pld."priceList" = '036' THEN 'au_fallback'
+                      WHEN pld."priceList" IN ('371','274','211','044','134','021') THEN 'nz_primary'
+                      WHEN pld."priceList" = '492' THEN 'nz_fallback'
+                  END
+                  ORDER BY pld."startDate" DESC
+              ) AS group_rn
+          FROM "tPriceListDetail" pld
+          INNER JOIN "tPriceList" pl ON pld."priceList" = pl."priceList"
+          WHERE pld."priceList" IN ('050','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
+            AND pld."isActive"
+      ),
+
+      "pivoted_prices" AS (
+          SELECT
+              "sku","country",
+              MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS clearance_price_050,
+              MAX(CASE WHEN "priceList" IN ('390','419','824','343','446','241') AND group_rn = 1 THEN "priceListPrice" END) AS au_primary_price,
+              MAX(CASE WHEN "priceList" = '036' AND group_rn = 1 THEN "priceListPrice" END) AS au_fallback_price_036,
+              MAX(CASE WHEN "priceList" IN ('371','274','211','044','134','021') AND group_rn = 1 THEN "priceListPrice" END) AS nz_primary_price,
+              MAX(CASE WHEN "priceList" = '492' AND group_rn = 1 THEN "priceListPrice" END) AS nz_fallback_price_492
+          FROM "pricelistDetail"
+          WHERE group_rn = 1
+          GROUP BY "sku","country"
+      ),
+
+      updateEventOfferDtlForComboList AS (
         SELECT
             eod."sku",
             eod."offerNo",
             eod."offerId",
             eoh."offerType",
-			eoh."OfferTypeId",
+            eoh."OfferTypeId",
             p."clearance",
             rag."G0",
             rag."G1",
@@ -40,19 +82,24 @@ BEGIN
             ((COALESCE(eoh."endDate", eh."endDate") - COALESCE(eoh."startDate", eh."startDate")) + 1) AS calc_units,
             config."configvalue"->>'channel' AS "salesType",
             eod."gst" AS gst_value,
-            ppr."exchangeRatePrice",
-            ppr."priceControlPlan",
-            ppr."pricePoint2",
+            ppr."pricePoint6",
             p."vendorCostPerEach",
             p."nationalAvgCost",
-			eoh."spacePurchase",
+            eoh."spacePurchase",
             eoh."incrementalPercentage",
-			eoh."advertisedPriceGst",			
-			eod."everydayUnits",
-			eod."categoryforecast",
-			eod."isCategoryForecastLocked",
+            eoh."advertisedPriceGst",
+            eod."everydayUnits",
+            eod."categoryforecast",
+            eod."isCategoryForecastLocked",
+            eh."country",
             COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS sohStore,
-            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc
+            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc,
+
+            pp.clearance_price_050,
+            pp.au_primary_price,
+            pp.au_fallback_price_036,
+            pp.nz_primary_price,
+            pp.nz_fallback_price_492
 
         FROM "tEventOfferDetail" eod
         INNER JOIN "tEventOffer" eoh
@@ -60,86 +107,103 @@ BEGIN
            AND eod."offerNo" = eoh."offerNumber"
         INNER JOIN "tEvent" eh
             ON eh."eventId" = eoh."eventId"
-			INNER JOIN "tProducts" p
-            ON p."sku" = eod."sku"
+            INNER JOIN "tProducts" p
+            ON p."sku" = eod."sku" and p."isActive"=true
        INNER JOIN "tPriceProductRules" ppr
             ON ppr."sku" = eod."sku"
             AND ppr."company" = eh."company"
-            and ppr."supplierId"=p."supplierId"
             and ppr."startDate"<=CURRENT_DATE and  ppr."endDate">=CURRENT_DATE
-        
+            and ppr."isActive" = TRUE
+
         INNER JOIN "tConfig" config
             ON config."configkey" = eh."channel"
            AND config."country" = eh."country"
            AND config."configtype" = 'SalesType'
+        LEFT JOIN "pivoted_prices" pp ON pp."sku" = eod."sku" and pp."country"=eh."country"
          LEFT JOIN "tInventory" inv
             ON inv."sku" = eod."sku"
-			AND inv."company" IN (eh."company",'12','52')
-		LEFT JOIN "tSalesY1" s
+            AND inv."company" IN (eh."company",'12','52')
+        LEFT JOIN "tSalesY1" s
             ON s."sku" = eod."sku"
            AND s."company" = eh."company"
-		   AND s."salesType" = config."configvalue" ->> 'channel'
+           AND s."salesType" = config."configvalue" ->> 'channel'
         LEFT JOIN "tRegionalAreaGroupAllocation" rag
              on rag."allocationGroup"='DEFAULT'
-			 AND rag."country" = eh."country"
-		WHERE eoh."OfferTypeId" IN (25)
-		AND UPPER(eh."status") <> 'COMPLETED'
+             AND rag."country" = eh."country"
+        WHERE eoh."OfferTypeId" IN (25)
+        AND UPPER(eh."status") <> 'COMPLETED'
         GROUP BY
-            eod."sku", eod."offerNo", eod."offerId",eoh."offerType", 
+            eod."sku", eod."offerNo", eod."offerId",eoh."offerType",
             eoh."offerId", eoh."endDate", eoh."startDate", eh."endDate", eh."startDate",
             config."configvalue",
-            ppr."exchangeRatePrice", ppr."priceControlPlan", ppr."pricePoint2",
+            ppr."pricePoint6",
             p."vendorCostPerEach", p."nationalAvgCost", p."clearance",
             eoh."incrementalPercentage", rag."G0",
             rag."G1",
             rag."G2",
             rag."G3",
             rag."G4",
-             rag."G5", 
-			 eoh."spacePurchase",
-			eoh."advertisedPriceGst",
-			s."averageMonthlySales",			
-			eod."everydayUnits",
-			eod."categoryforecast",
-			eoh."OfferTypeId",
-			eod."isCategoryForecastLocked",
-			eod."gst"
+             rag."G5",
+             eoh."spacePurchase",
+            eoh."advertisedPriceGst",
+            s."averageMonthlySales",
+            eod."everydayUnits",
+            eod."categoryforecast",
+            eoh."OfferTypeId",
+            eod."isCategoryForecastLocked",
+            eod."gst",
+            eh."country",
+            pp.clearance_price_050,
+            pp.au_primary_price,
+            pp.au_fallback_price_036,
+            pp.nz_primary_price,
+            pp.nz_fallback_price_492
+    ),
+
+    "baseRrpCalculation_ComboList" AS (
+        SELECT
+            d.*,
+            CASE
+                WHEN d."clearance" = 'Y' THEN
+                    Round(COALESCE(d.clearance_price_050,0),2)
+                    
+
+                WHEN d."clearance" <> 'Y' AND d."country" = 'AU' THEN
+                    CASE
+                        WHEN d.au_primary_price IS NOT NULL THEN
+                           Round(d.au_primary_price,2)   
+                        WHEN d.au_fallback_price_036 IS NOT NULL THEN
+                          Round(d.au_fallback_price_036,2)
+                        ELSE
+                            ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)
+                    END
+
+                WHEN d."clearance" <> 'Y' AND d."country" = 'NZ' THEN
+                    CASE
+                        WHEN d.nz_primary_price IS NOT NULL THEN
+                            ROUND(d.nz_primary_price, 2)
+                        WHEN d.nz_fallback_price_492 IS NOT NULL THEN
+                            ROUND(d.nz_fallback_price_492, 2)
+                        ELSE
+                        ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)  
+                    END
+            END AS base_rrp_price
+        FROM updateEventOfferDtlForComboList d
     ),
 
     calculationsForEventOfferDtlComboList AS (
         SELECT
             d.*,
-            ROUND(COALESCE(
-                CASE d."salesType"
-                    WHEN 'CASH' THEN d."exchangeRatePrice"
-                    WHEN 'P&C'  THEN d."priceControlPlan"
-                    WHEN 'ACC'  THEN d."pricePoint2"
-                    ELSE 0
-                END, 0
-            ),2) AS new_everydayPriceGst,
-			CASE WHEN d."isCategoryForecastLocked" = FALSE 
-			THEN CAST(ROUND((d."incrementalPercentage"::numeric / 100)* ROUND(d.calc_units)::numeric) AS integer)
-			ELSE d."categoryforecast" END as categoryFcst,
-			CASE WHEN d."clearance" = 'Y' THEN ROUND(COALESCE(
-                CASE d."salesType"
-                    WHEN 'CASH' THEN d."exchangeRatePrice"
-                    WHEN 'P&C'  THEN d."priceControlPlan"
-                    WHEN 'ACC'  THEN d."pricePoint2"
-                    ELSE 0
-                END, 0
-            ),2)
-			ELSE d."advertisedPriceGst" END AS new_advertisedPriceGst,
-			CASE WHEN d."clearance" = 'Y' THEN ROUND(COALESCE(
-                CASE d."salesType"
-                    WHEN 'CASH' THEN d."exchangeRatePrice"
-                    WHEN 'P&C'  THEN d."priceControlPlan"
-                    WHEN 'ACC'  THEN d."pricePoint2"
-                    ELSE 0
-                END, 0
-            )/(1+ COALESCE(d.gst_value, 0)),2)
-			ELSE ROUND((d."advertisedPriceGst")/(1+ COALESCE(d.gst_value, 0)),2) END AS new_advertisedPrice,
-			ROUND(d."nationalAvgCost",2) as natAvgCost
-        FROM updateEventOfferDtlForComboList d
+            d.base_rrp_price AS new_everydayPriceGst,
+            CASE WHEN d."isCategoryForecastLocked" = FALSE
+            THEN CAST(ROUND((d."incrementalPercentage"::numeric / 100)* ROUND(d.calc_units)::numeric) AS integer)
+            ELSE d."categoryforecast" END as categoryFcst,
+            CASE WHEN d."clearance" = 'Y' THEN d.base_rrp_price
+            ELSE d."advertisedPriceGst" END AS new_advertisedPriceGst,
+            CASE WHEN d."clearance" = 'Y' THEN ROUND(d.base_rrp_price / (1 + COALESCE(d.gst_value, 0)),2)
+            ELSE ROUND((d."advertisedPriceGst") / (1 + COALESCE(d.gst_value, 0)),2) END AS new_advertisedPrice,
+            ROUND(d."nationalAvgCost",2) as natAvgCost
+        FROM "baseRrpCalculation_ComboList" d
     )
     UPDATE "tEventOfferDetail" e
     SET
@@ -147,25 +211,25 @@ BEGIN
         "everydayPrice" = Round(c.new_everydayPriceGst / (1 + COALESCE(c.gst_value, 0)),2),
         "everydayPriceGst" = c.new_everydayPriceGst,
         "everydayPriceGstSys" = c.new_everydayPriceGst,
-		"advertisedPriceGst" = c.new_advertisedPriceGst,
-		"advertisedPrice" = c.new_advertisedPrice,
-		"calculatedSaveValue"= Round(c.new_everydayPriceGst-c.new_advertisedPriceGst,2),
-		"calculatedSavePercentage" = CASE 
+        "advertisedPriceGst" = c.new_advertisedPriceGst,
+        "advertisedPrice" = c.new_advertisedPrice,
+        "calculatedSaveValue"= Round(c.new_everydayPriceGst-c.new_advertisedPriceGst,2),
+        "calculatedSavePercentage" = CASE
     WHEN c.new_everydayPriceGst > 0 THEN ROUND(((c.new_everydayPriceGst - c.new_advertisedPriceGst) / c.new_everydayPriceGst)* 100, 2)
-    ELSE 0 
+    ELSE 0
 END,
-		"categoryforecast" = c.categoryFcst,
+        "categoryforecast" = c.categoryFcst,
         "forecastCost"=Round(ROUND(COALESCE(c."vendorCostPerEach",0),2)*c.categoryFcst,2),
         "forecastSales"=Round(c.categoryFcst*ROUND(c.new_advertisedPriceGst,2),2),
-		"incrementalForecast"=c.categoryFcst-ROUND(c.calc_units),
+        "incrementalForecast"=c.categoryFcst-ROUND(c.calc_units),
         "nationalAverageCost" = COALESCE(c.natAvgCost, 0),
-		"clearanceIndicator" = CASE WHEN c."clearance" IS NULL OR TRIM(c."clearance") = '' THEN 'N' ELSE c."clearance" END,
+        "clearanceIndicator" = CASE WHEN c."clearance" IS NULL OR TRIM(c."clearance") = '' THEN 'N' ELSE c."clearance" END,
         "forecastTradeMargin$" = ROUND((c.new_advertisedPrice - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst,2),
         "stockOnHandStore" = c.sohStore,
         "stockOnHandDC"    = c.sohDc,
         "LatestEffectiveCost" = ROUND(ROUND(COALESCE(c."vendorCostPerEach",0),2),2),
         "categoryCost"        = COALESCE(c.natAvgCost, 0),
-      
+
         "everydayExtendedUnitCost"  = ROUND(c.calc_units) * COALESCE(c.natAvgCost, 0),
         "everydayExtendedUnitSales" = ROUND(c.calc_units )* c.new_everydayPriceGst,
 
@@ -173,14 +237,14 @@ END,
         "everydayCost" = COALESCE(c.natAvgCost, 0),
         "incrementalSales"=Round(Round(c.categoryFcst*ROUND(c.new_advertisedPriceGst,2),2) - (ROUND(c.calc_units)*c.new_everydayPriceGst),2),
         "incrementalTrade$" =  ROUND( ROUND((c.new_advertisedPrice - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst,2) - ROUND((Round(c.new_everydayPriceGst / (1 + COALESCE(c.gst_value, 0)),2)-ROUND(COALESCE(c."vendorCostPerEach",0),2) )*ROUND(c.calc_units),2), 2),
-        "forecastTradeMargin%" = CASE 
-        WHEN Round(c.categoryFcst*ROUND(c.new_advertisedPriceGst,2),2) > 0
-        THEN             
+        "forecastTradeMargin%" = CASE
+        WHEN Round(c.categoryFcst*ROUND(c.new_advertisedPrice,2),2) > 0
+        THEN
                ROUND(((c.new_advertisedPrice - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst) / (c.categoryFcst * c.new_advertisedPrice) * 100, 2)
 
         ELSE 0
-		END,
-		"totalTieUp" = 
+        END,
+        "totalTieUp" =
         (COALESCE(e."group0Quantity",0) * COALESCE(c."G0",0)) +
         (COALESCE(e."group1Quantity",0) * COALESCE(c."G1",0)) +
         (COALESCE(e."group2Quantity",0) * COALESCE(c."G2",0)) +
@@ -207,37 +271,79 @@ END,
 --===============================================================================================================
 
 -- MULTIBUY (SKU LIST)
- WITH updateEventOfferDtlForMultiBuySKUList AS (
+ WITH "pricelistDetail" AS (
+          SELECT
+              pld."sku",
+              pld."priceList",
+              pld."priceListPrice",
+              pld."startDate",
+              pld."country",
+              ROW_NUMBER() OVER (
+                  PARTITION BY pld."sku",pld."country",
+                  CASE
+                      WHEN pld."priceList" = '050' THEN 'clearance'
+                      WHEN pld."priceList" IN ('390','419','824','343','446','241') THEN 'au_primary'
+                      WHEN pld."priceList" = '036' THEN 'au_fallback'
+                      WHEN pld."priceList" IN ('371','274','211','044','134','021') THEN 'nz_primary'
+                      WHEN pld."priceList" = '492' THEN 'nz_fallback'
+                  END
+                  ORDER BY pld."startDate" DESC
+              ) AS group_rn
+          FROM "tPriceListDetail" pld
+          INNER JOIN "tPriceList" pl ON pld."priceList" = pl."priceList"
+          WHERE pld."priceList" IN ('050','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
+            AND pld."isActive"
+      ),
+
+      "pivoted_prices" AS (
+          SELECT
+              "sku","country",
+              MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS clearance_price_050,
+              MAX(CASE WHEN "priceList" IN ('390','419','824','343','446','241') AND group_rn = 1 THEN "priceListPrice" END) AS au_primary_price,
+              MAX(CASE WHEN "priceList" = '036' AND group_rn = 1 THEN "priceListPrice" END) AS au_fallback_price_036,
+              MAX(CASE WHEN "priceList" IN ('371','274','211','044','134','021') AND group_rn = 1 THEN "priceListPrice" END) AS nz_primary_price,
+              MAX(CASE WHEN "priceList" = '492' AND group_rn = 1 THEN "priceListPrice" END) AS nz_fallback_price_492
+          FROM "pricelistDetail"
+          WHERE group_rn = 1
+          GROUP BY "sku","country"
+      ),
+
+      updateEventOfferDtlForMultiBuySKUList AS (
         SELECT
             eod."sku",
             eod."offerNo",
             eod."offerId",
             eoh."offerType",
-			eoh."OfferTypeId",
+            eoh."OfferTypeId",
             p."clearance",
             rag."G0",
             rag."G1",
             rag."G2",
             rag."G3",
-            rag."G4",			
-			eod."everydayUnits",
-			eod."categoryforecast",
-			eoh."spacePurchase",
+            rag."G4",
+            eod."everydayUnits",
+            eod."categoryforecast",
+            eoh."spacePurchase",
              rag."G5",
             (COALESCE(s."averageMonthlySales", 0) / 30.0) *
             ((COALESCE(eoh."endDate", eh."endDate") - COALESCE(eoh."startDate", eh."startDate")) + 1) AS calc_units,
             config."configvalue"->>'channel' AS "salesType",
             eod."gst" AS gst_value,
-            ppr."exchangeRatePrice",
-            ppr."priceControlPlan",
-            ppr."pricePoint2",
+            ppr."pricePoint6",
             p."vendorCostPerEach",
             p."nationalAvgCost",
             eoh."incrementalPercentage",
-			eoh."advertisedPriceGst",
-			eod."isCategoryForecastLocked",
+            eoh."advertisedPriceGst",
+            eod."isCategoryForecastLocked",
+            eh."country",
             COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS sohStore,
-            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc
+            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc,
+
+            pp.clearance_price_050,
+            pp.au_primary_price,
+            pp.au_fallback_price_036,
+            pp.nz_primary_price,
+            pp.nz_fallback_price_492
 
         FROM "tEventOfferDetail" eod
         INNER JOIN "tEventOffer" eoh
@@ -245,37 +351,36 @@ END,
            AND eod."offerNo" = eoh."offerNumber"
         INNER JOIN "tEvent" eh
             ON eh."eventId" = eoh."eventId"
-			INNER JOIN "tProducts" p
-            ON p."sku" = eod."sku"
+            INNER JOIN "tProducts" p
+            ON p."sku" = eod."sku" and p."isActive"=true
          INNER JOIN "tPriceProductRules" ppr
             ON ppr."sku" = eod."sku"
             AND ppr."company" = eh."company"
-            and ppr."supplierId"=p."supplierId"
             and ppr."startDate"<=CURRENT_DATE and  ppr."endDate">=CURRENT_DATE
-        
+            and ppr."isActive" = TRUE
 
-        
         INNER JOIN "tConfig" config
             ON config."configkey" = eh."channel"
            AND config."country" = eh."country"
            AND config."configtype" = 'SalesType'
+        LEFT JOIN "pivoted_prices" pp ON pp."sku" = eod."sku" and pp."country"=eh."country"
         LEFT JOIN "tInventory" inv
             ON inv."sku" = eod."sku"
-			AND inv."company" IN (eh."company",'12','52')
-		 LEFT JOIN "tSalesY1" s
+            AND inv."company" IN (eh."company",'12','52')
+         LEFT JOIN "tSalesY1" s
             ON s."sku" = eod."sku"
            AND s."company" = eh."company"
-		   AND s."salesType" = config."configvalue" ->> 'channel'
+           AND s."salesType" = config."configvalue" ->> 'channel'
         LEFT JOIN "tRegionalAreaGroupAllocation" rag
              on rag."allocationGroup"='DEFAULT'
-			 AND rag."country" = eh."country"
-		WHERE eoh."OfferTypeId" IN (15)
-		AND UPPER(eh."status") <> 'COMPLETED'
+             AND rag."country" = eh."country"
+        WHERE eoh."OfferTypeId" IN (15)
+        AND UPPER(eh."status") <> 'COMPLETED'
         GROUP BY
-            eod."sku", eod."offerNo", eod."offerId",eoh."offerType", 
+            eod."sku", eod."offerNo", eod."offerId",eoh."offerType",
             eoh."offerId", eoh."endDate", eoh."startDate", eh."endDate", eh."startDate",
             config."configvalue",
-            ppr."exchangeRatePrice", ppr."priceControlPlan", ppr."pricePoint2",
+            ppr."pricePoint6",
             p."vendorCostPerEach", p."nationalAvgCost", p."clearance",
             eoh."incrementalPercentage",rag."G0",eoh."OfferTypeId",
             rag."G1",
@@ -283,50 +388,65 @@ END,
             rag."G3",
             rag."G4",
              rag."G5",
-			eoh."advertisedPriceGst",
-			eod."everydayUnits",
-			eod."categoryforecast",
-			s."averageMonthlySales",
-			eoh."spacePurchase",
-			eod."isCategoryForecastLocked",
-			eod."gst"
+            eoh."advertisedPriceGst",
+            eod."everydayUnits",
+            eod."categoryforecast",
+            s."averageMonthlySales",
+            eoh."spacePurchase",
+            eod."isCategoryForecastLocked",
+            eod."gst",
+            eh."country",
+            pp.clearance_price_050,
+            pp.au_primary_price,
+            pp.au_fallback_price_036,
+            pp.nz_primary_price,
+            pp.nz_fallback_price_492
+    ),
+
+    "baseRrpCalculation_MultiBuyList" AS (
+        SELECT
+            d.*,
+            CASE
+                WHEN d."clearance" = 'Y' THEN
+                    Round(COALESCE(d.clearance_price_050,0),2)
+                    
+
+                WHEN d."clearance" <> 'Y' AND d."country" = 'AU' THEN
+                    CASE
+                        WHEN d.au_primary_price IS NOT NULL THEN
+                           Round(d.au_primary_price,2)   
+                        WHEN d.au_fallback_price_036 IS NOT NULL THEN
+                          Round(d.au_fallback_price_036,2)
+                        ELSE
+                            ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)
+                    END
+
+                WHEN d."clearance" <> 'Y' AND d."country" = 'NZ' THEN
+                    CASE
+                        WHEN d.nz_primary_price IS NOT NULL THEN
+                            ROUND(d.nz_primary_price, 2)
+                        WHEN d.nz_fallback_price_492 IS NOT NULL THEN
+                            ROUND(d.nz_fallback_price_492, 2)
+                        ELSE
+                        ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)  
+                    END
+            END AS base_rrp_price
+        FROM updateEventOfferDtlForMultiBuySKUList d
     ),
 
     calculationsForEventOfferDtlMultiBuySKUList AS (
         SELECT
             d.*,
-            ROUND(COALESCE(
-                CASE d."salesType"
-                    WHEN 'CASH' THEN d."exchangeRatePrice"
-                    WHEN 'P&C'  THEN d."priceControlPlan"
-                    WHEN 'ACC'  THEN d."pricePoint2"
-                    ELSE 0
-                END, 0
-            ),2) AS new_everydayPriceGst,
-			CASE 
-			WHEN d."isCategoryForecastLocked" = FALSE 
-			THEN CAST(ROUND((d."incrementalPercentage"::numeric / 100)* ROUND(d.calc_units)::numeric) AS integer) 
-			ELSE d."categoryforecast" END as categoryFcst,
-			CASE WHEN d."clearance" = 'Y' THEN ROUND(COALESCE(
-                CASE d."salesType"
-                    WHEN 'CASH' THEN d."exchangeRatePrice"
-                    WHEN 'P&C'  THEN d."priceControlPlan"
-                    WHEN 'ACC'  THEN d."pricePoint2"
-                    ELSE 0
-                END, 0
-            ),2)
-			ELSE d."advertisedPriceGst" END AS new_advertisedPriceGst,
-			CASE WHEN d."clearance" = 'Y' THEN ROUND(COALESCE(
-                CASE d."salesType"
-                    WHEN 'CASH' THEN d."exchangeRatePrice"
-                    WHEN 'P&C'  THEN d."priceControlPlan"
-                    WHEN 'ACC'  THEN d."pricePoint2"
-                    ELSE 0
-                END, 0
-            )/(1+ COALESCE(d.gst_value, 0)),2)
-			ELSE ROUND((d."advertisedPriceGst")/(1+ COALESCE(d.gst_value, 0)),2) END AS new_advertisedPrice
-			
-        FROM updateEventOfferDtlForMultiBuySKUList d
+            d.base_rrp_price AS new_everydayPriceGst,
+            CASE
+            WHEN d."isCategoryForecastLocked" = FALSE
+            THEN CAST(ROUND((d."incrementalPercentage"::numeric / 100)* ROUND(d.calc_units)::numeric) AS integer)
+            ELSE d."categoryforecast" END as categoryFcst,
+            CASE WHEN d."clearance" = 'Y' THEN d.base_rrp_price
+            ELSE d."advertisedPriceGst" END AS new_advertisedPriceGst,
+            CASE WHEN d."clearance" = 'Y' THEN ROUND(d.base_rrp_price / (1 + COALESCE(d.gst_value, 0)),2)
+            ELSE ROUND((d."advertisedPriceGst") / (1 + COALESCE(d.gst_value, 0)),2) END AS new_advertisedPrice
+        FROM "baseRrpCalculation_MultiBuyList" d
     )
     UPDATE "tEventOfferDetail" e
     SET
@@ -334,17 +454,17 @@ END,
         "everydayPrice" = Round(c.new_everydayPriceGst / (1 + COALESCE(c.gst_value, 0)),2),
         "everydayPriceGst" = c.new_everydayPriceGst,
         "everydayPriceGstSys" = c.new_everydayPriceGst,
-		"advertisedPriceGst"= c.new_advertisedPriceGst,
-		"advertisedPrice" = c.new_advertisedPrice,
-		"calculatedSaveValue"= Round(e."everydayPriceGst"-c.new_advertisedPriceGst,2),
-		"calculatedSavePercentage" = CASE 
+        "advertisedPriceGst"= c.new_advertisedPriceGst,
+        "advertisedPrice" = c.new_advertisedPrice,
+        "calculatedSaveValue"= Round(e."everydayPriceGst"-c.new_advertisedPriceGst,2),
+        "calculatedSavePercentage" = CASE
     WHEN c.new_everydayPriceGst > 0 THEN ROUND(((c.new_everydayPriceGst - c.new_advertisedPriceGst) / c.new_everydayPriceGst)* 100, 2)
-    ELSE 0 
+    ELSE 0
 END,
-		"categoryforecast" = c.categoryFcst,
+        "categoryforecast" = c.categoryFcst,
         "incrementalForecast"=c.categoryFcst-ROUND(c.calc_units),
         "nationalAverageCost" = COALESCE(c."nationalAvgCost", 0),
-		"clearanceIndicator" = CASE WHEN c."clearance" IS NULL OR TRIM(c."clearance") = '' THEN 'N' ELSE c."clearance" END,
+        "clearanceIndicator" = CASE WHEN c."clearance" IS NULL OR TRIM(c."clearance") = '' THEN 'N' ELSE c."clearance" END,
         "forecastTradeMargin$" = ROUND((c.new_advertisedPrice - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst,2),
         "stockOnHandStore" = c.sohStore,
         "stockOnHandDC"    = c.sohDc,
@@ -359,14 +479,14 @@ END,
         "everydayCost" = COALESCE(c."nationalAvgCost", 0),
          "incrementalSales"=Round(Round(c.categoryFcst*ROUND(c.new_advertisedPriceGst,2),2) - (ROUND(c.calc_units)*c.new_everydayPriceGst),2),
         "incrementalTrade$" =  ROUND( ROUND((c.new_advertisedPrice - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst,2) - ROUND((Round(c.new_everydayPriceGst / (1 + COALESCE(c.gst_value, 0)),2)-ROUND(COALESCE(c."vendorCostPerEach",0),2) )*ROUND(c.calc_units),2), 2),
-        "forecastTradeMargin%" = CASE 
-        WHEN Round(c.categoryFcst*ROUND(c.new_advertisedPriceGst,2),2) > 0
-        THEN             
+        "forecastTradeMargin%" = CASE
+        WHEN Round(c.categoryFcst*ROUND(c.new_advertisedPrice,2),2) > 0
+        THEN
                ROUND(((c.new_advertisedPrice - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst) / (c.categoryFcst * c.new_advertisedPrice) * 100, 2)
 
         ELSE 0
-		END,
-		"totalTieUp" = 
+        END,
+        "totalTieUp" =
         (COALESCE(e."group0Quantity",0) * COALESCE(c."G0",0)) +
         (COALESCE(e."group1Quantity",0) * COALESCE(c."G1",0)) +
         (COALESCE(e."group2Quantity",0) * COALESCE(c."G2",0)) +
@@ -393,13 +513,50 @@ END,
 --===============================================================================================================
 
 -- PRICE ONLY (SKU LIST)
- WITH updateEventOfferDtlForPriceOnlySKUList AS (
+ WITH "pricelistDetail" AS (
+          SELECT
+              pld."sku",
+              pld."priceList",
+              pld."priceListPrice",
+              pld."startDate",
+              pld."country",
+              ROW_NUMBER() OVER (
+                  PARTITION BY pld."sku",pld."country",
+                  CASE
+                      WHEN pld."priceList" = '050' THEN 'clearance'
+                      WHEN pld."priceList" IN ('390','419','824','343','446','241') THEN 'au_primary'
+                      WHEN pld."priceList" = '036' THEN 'au_fallback'
+                      WHEN pld."priceList" IN ('371','274','211','044','134','021') THEN 'nz_primary'
+                      WHEN pld."priceList" = '492' THEN 'nz_fallback'
+                  END
+                  ORDER BY pld."startDate" DESC
+              ) AS group_rn
+          FROM "tPriceListDetail" pld
+          INNER JOIN "tPriceList" pl ON pld."priceList" = pl."priceList"
+          WHERE pld."priceList" IN ('050','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
+            AND pld."isActive"
+      ),
+
+      "pivoted_prices" AS (
+          SELECT
+              "sku","country",
+              MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS clearance_price_050,
+              MAX(CASE WHEN "priceList" IN ('390','419','824','343','446','241') AND group_rn = 1 THEN "priceListPrice" END) AS au_primary_price,
+              MAX(CASE WHEN "priceList" = '036' AND group_rn = 1 THEN "priceListPrice" END) AS au_fallback_price_036,
+              MAX(CASE WHEN "priceList" IN ('371','274','211','044','134','021') AND group_rn = 1 THEN "priceListPrice" END) AS nz_primary_price,
+              MAX(CASE WHEN "priceList" = '492' AND group_rn = 1 THEN "priceListPrice" END) AS nz_fallback_price_492
+          FROM "pricelistDetail"
+          WHERE group_rn = 1
+          GROUP BY "sku","country"
+      ),
+
+      updateEventOfferDtlForPriceOnlySKUList AS (
         SELECT
             eod."sku",
             eod."offerNo",
             eod."offerId",
             eoh."offerType",
-			eoh."OfferTypeId",
+            eoh."OfferTypeId",
             p."clearance",
             rag."G0",
             rag."G1",
@@ -411,18 +568,23 @@ END,
             ((COALESCE(eoh."endDate", eh."endDate") - COALESCE(eoh."startDate", eh."startDate")) + 1) AS calc_units,
             config."configvalue"->>'channel' AS "salesType",
             eod."gst" AS gst_value,
-            ppr."exchangeRatePrice",
-            ppr."priceControlPlan",
-            ppr."pricePoint2",
+            ppr."pricePoint6",
             p."vendorCostPerEach",
             p."nationalAvgCost",
-            eoh."incrementalPercentage",			
-			eod."everydayUnits",
-			eod."categoryforecast",
-			eoh."spacePurchase",
-			eod."isCategoryForecastLocked",
+            eoh."incrementalPercentage",
+            eod."everydayUnits",
+            eod."categoryforecast",
+            eoh."spacePurchase",
+            eod."isCategoryForecastLocked",
+            eh."country",
             COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS sohStore,
-            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc
+            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc,
+
+            pp.clearance_price_050,
+            pp.au_primary_price,
+            pp.au_fallback_price_036,
+            pp.nz_primary_price,
+            pp.nz_fallback_price_492
 
         FROM "tEventOfferDetail" eod
         INNER JOIN "tEventOffer" eoh
@@ -430,77 +592,100 @@ END,
            AND eod."offerNo" = eoh."offerNumber"
         INNER JOIN "tEvent" eh
             ON eh."eventId" = eoh."eventId"
-			 INNER JOIN "tProducts" p
-            ON p."sku" = eod."sku"
+             INNER JOIN "tProducts" p
+            ON p."sku" = eod."sku" and p."isActive"=true
          INNER JOIN "tPriceProductRules" ppr
             ON ppr."sku" = eod."sku"
             AND ppr."company" = eh."company"
-            and ppr."supplierId"=p."supplierId"
             and ppr."startDate"<=CURRENT_DATE and  ppr."endDate">=CURRENT_DATE
+            and ppr."isActive" = TRUE
 
-       
         INNER JOIN "tConfig" config
             ON config."configkey" = eh."channel"
            AND config."country" = eh."country"
            AND config."configtype" = 'SalesType'
+        LEFT JOIN "pivoted_prices" pp ON pp."sku" = eod."sku" and pp."country"=eh."country"
         LEFT JOIN "tInventory" inv
             ON inv."sku" = eod."sku"
-			AND inv."company" IN (eh."company",'12','52')
-		LEFT JOIN "tSalesY1" s
+            AND inv."company" IN (eh."company",'12','52')
+        LEFT JOIN "tSalesY1" s
             ON s."sku" = eod."sku"
            AND s."company" = eh."company"
-		   AND s."salesType" = config."configvalue" ->> 'channel'
+           AND s."salesType" = config."configvalue" ->> 'channel'
         LEFT JOIN "tRegionalAreaGroupAllocation" rag
              on rag."allocationGroup"='DEFAULT'
-			 AND rag."country" = eh."country"
-		WHERE eoh."OfferTypeId" = 23
-		AND UPPER(eh."status") <> 'COMPLETED'
+             AND rag."country" = eh."country"
+        WHERE eoh."OfferTypeId" = 23
+        AND UPPER(eh."status") <> 'COMPLETED'
         GROUP BY
-            eod."sku", eod."offerNo", eod."offerId",eoh."offerType", 
+            eod."sku", eod."offerNo", eod."offerId",eoh."offerType",
             eoh."offerId", eoh."endDate", eoh."startDate", eh."endDate", eh."startDate",
-            config."configvalue", 
-            ppr."exchangeRatePrice", ppr."priceControlPlan", ppr."pricePoint2",
+            config."configvalue",
+            ppr."pricePoint6",
             p."vendorCostPerEach", p."nationalAvgCost", p."clearance",
             eoh."incrementalPercentage",rag."G0",
             rag."G1",
             rag."G2",
             rag."G3",
             rag."G4",
-             rag."G5",	
-			 eoh."spacePurchase",
-			eod."everydayUnits",
-			eod."categoryforecast",
-			 s."averageMonthlySales",
-			 eoh."OfferTypeId",
-			 eod."isCategoryForecastLocked",
-			 eod."gst"
+             rag."G5",
+             eoh."spacePurchase",
+            eod."everydayUnits",
+            eod."categoryforecast",
+             s."averageMonthlySales",
+             eoh."OfferTypeId",
+             eod."isCategoryForecastLocked",
+             eod."gst",
+             eh."country",
+             pp.clearance_price_050,
+             pp.au_primary_price,
+             pp.au_fallback_price_036,
+             pp.nz_primary_price,
+             pp.nz_fallback_price_492
+    ),
+
+    "baseRrpCalculation_PriceOnlyList" AS (
+        SELECT
+            d.*,
+            CASE
+                WHEN d."clearance" = 'Y' THEN
+                    Round(COALESCE(d.clearance_price_050,0),2)
+                    
+
+                WHEN d."clearance" <> 'Y' AND d."country" = 'AU' THEN
+                    CASE
+                        WHEN d.au_primary_price IS NOT NULL THEN
+                           Round(d.au_primary_price,2)   
+                        WHEN d.au_fallback_price_036 IS NOT NULL THEN
+                          Round(d.au_fallback_price_036,2)
+                        ELSE
+                            ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)
+                    END
+
+                WHEN d."clearance" <> 'Y' AND d."country" = 'NZ' THEN
+                    CASE
+                        WHEN d.nz_primary_price IS NOT NULL THEN
+                            ROUND(d.nz_primary_price, 2)
+                        WHEN d.nz_fallback_price_492 IS NOT NULL THEN
+                            ROUND(d.nz_fallback_price_492, 2)
+                        ELSE
+                        ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)  
+                    END
+            END AS base_rrp_price
+        FROM updateEventOfferDtlForPriceOnlySKUList d
     ),
 
     calculationsForEventOfferDtlPriceOnlySKUList AS (
         SELECT
             d.*,
-            ROUND(COALESCE(
-                CASE d."salesType"
-                    WHEN 'CASH' THEN d."exchangeRatePrice"
-                    WHEN 'P&C'  THEN d."priceControlPlan"
-                    WHEN 'ACC'  THEN d."pricePoint2"
-                    ELSE 0
-                END, 0
-            ),2) AS new_everydayPriceGst,
-			ROUND(COALESCE(
-                CASE d."salesType"
-                    WHEN 'CASH' THEN d."exchangeRatePrice"
-                    WHEN 'P&C'  THEN d."priceControlPlan"
-                    WHEN 'ACC'  THEN d."pricePoint2"
-                    ELSE 0
-                END, 0
-            )/ (1 + COALESCE(d.gst_value, 0)),2) AS new_everydayPriceExGst,
-			CASE 
-			WHEN d."isCategoryForecastLocked" = FALSE 
-			THEN CAST(ROUND((d."incrementalPercentage"::numeric / 100)* ROUND(d.calc_units)::numeric) AS integer) 
-			ELSE d."categoryforecast" END as categoryFcst,
-			ROUND(d."nationalAvgCost",2) as natAvgCost
-        FROM updateEventOfferDtlForPriceOnlySKUList d
+            d.base_rrp_price AS new_everydayPriceGst,
+            ROUND(d.base_rrp_price / (1 + COALESCE(d.gst_value, 0)),2) AS new_everydayPriceExGst,
+            CASE
+            WHEN d."isCategoryForecastLocked" = FALSE
+            THEN CAST(ROUND((d."incrementalPercentage"::numeric / 100)* ROUND(d.calc_units)::numeric) AS integer)
+            ELSE d."categoryforecast" END as categoryFcst,
+            ROUND(d."nationalAvgCost",2) as natAvgCost
+        FROM "baseRrpCalculation_PriceOnlyList" d
     )
     ---Price Only (SKU LISt)
     UPDATE "tEventOfferDetail" e
@@ -508,23 +693,23 @@ END,
         "everydayUnits" = ROUND(c.calc_units),
         "everydayPrice" = Round(c.new_everydayPriceGst / (1 + COALESCE(c.gst_value, 0)),2),
         "everydayPriceGst" = c.new_everydayPriceGst,
-		"advertisedPriceGst" = c.new_everydayPriceGst,
-		"advertisedPrice" = Round(c.new_everydayPriceGst / (1 + COALESCE(c.gst_value, 0)),2),
+        "advertisedPriceGst" = c.new_everydayPriceGst,
+        "advertisedPrice" = Round(c.new_everydayPriceGst / (1 + COALESCE(c.gst_value, 0)),2),
         "everydayPriceGstSys" = c.new_everydayPriceGst,
         "calculatedSaveValue"=0,
-		"calculatedSavePercentage" = 0,
-		"categoryforecast" = c.categoryFcst,
-		"forecastCost"=Round(ROUND(COALESCE(c."vendorCostPerEach",0),2)*c.categoryFcst,2),
+        "calculatedSavePercentage" = 0,
+        "categoryforecast" = c.categoryFcst,
+        "forecastCost"=Round(ROUND(COALESCE(c."vendorCostPerEach",0),2)*c.categoryFcst,2),
         "forecastSales"=Round(c.categoryFcst*ROUND(c.new_everydayPriceGst,2),2),
         "incrementalForecast"=c.categoryFcst-ROUND(c.calc_units),
         "nationalAverageCost" = COALESCE(c.natAvgCost, 0),
-		"clearanceIndicator" = CASE WHEN c."clearance" IS NULL OR TRIM(c."clearance") = '' THEN 'N' ELSE c."clearance" END,
+        "clearanceIndicator" = CASE WHEN c."clearance" IS NULL OR TRIM(c."clearance") = '' THEN 'N' ELSE c."clearance" END,
         "forecastTradeMargin$" = ROUND((c.new_everydayPriceExGst - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst,2),
         "stockOnHandStore" = c.sohStore,
         "stockOnHandDC"    = c.sohDc,
         "LatestEffectiveCost" = ROUND(ROUND(COALESCE(c."vendorCostPerEach",0),2),2),
         "categoryCost"        = COALESCE(c.natAvgCost, 0),
-      
+
         "everydayExtendedUnitCost"  = ROUND(c.calc_units )* COALESCE(c.natAvgCost, 0),
         "everydayExtendedUnitSales" = ROUND(c.calc_units) * c.new_everydayPriceGst,
 
@@ -532,14 +717,14 @@ END,
         "everydayCost" = COALESCE(c.natAvgCost, 0),
         "incrementalSales"=Round(Round(c.categoryFcst*ROUND(c.new_everydayPriceGst,2),2) - (ROUND(c.calc_units)*c.new_everydayPriceGst),2),
         "incrementalTrade$" =  ROUND( ROUND((c.new_everydayPriceExGst - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst,2) - ROUND((Round(c.new_everydayPriceGst / (1 + COALESCE(c.gst_value, 0)),2)-ROUND(COALESCE(c."vendorCostPerEach",0),2) )*ROUND(c.calc_units),2), 2),
-        "forecastTradeMargin%" = CASE 
-        WHEN Round(c.categoryFcst*ROUND(c.new_everydayPriceGst,2),2) > 0
-        THEN             
+        "forecastTradeMargin%" = CASE
+        WHEN Round(c.categoryFcst*ROUND(c.new_everydayPriceExGst,2),2) > 0
+        THEN
                ROUND(((c.new_everydayPriceExGst - ROUND(COALESCE(c."vendorCostPerEach",0),2)) * c.categoryFcst) / (c.categoryFcst * c.new_everydayPriceExGst) * 100, 2)
 
         ELSE 0
-		END,
-		"totalTieUp" = 
+        END,
+        "totalTieUp" =
         (COALESCE(e."group0Quantity",0) * COALESCE(c."G0",0)) +
         (COALESCE(e."group1Quantity",0) * COALESCE(c."G1",0)) +
         (COALESCE(e."group2Quantity",0) * COALESCE(c."G2",0)) +
@@ -570,7 +755,7 @@ WITH EventOfferDtlSummaryForComboList AS (
     SELECT
         d."offerId",
         d."eventId",
-		d."offerNo",
+        d."offerNo",
         d."gst" AS gst_value,
         -- Forecast metrics
         ROUND(SUM(COALESCE(d."forecastCost", 0)), 2)             AS "forecastCost",
@@ -592,13 +777,14 @@ WITH EventOfferDtlSummaryForComboList AS (
         -- Scan support
         SUM(COALESCE(d."scanSupport$", 0) * COALESCE(d."categoryforecast", 0)) AS "totalScanSupport$",
         ROUND(SUM((COALESCE(d."LatestEffectiveCost", 0) * (COALESCE(d."scanSupport%", 0)/100) * COALESCE(d."categoryforecast", 0))),2) AS "totalScanSupport%"
-		   
+
     FROM public."tEventOfferDetail" d
     INNER JOIN public."tEventOffer" o
         ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
     WHERE  (o."OfferTypeId" IN (25))
-	   AND d."offerNo" = o."offerNumber"
-	  AND d."offerId" = o."offerId"
+       AND d."offerNo" = o."offerNumber"
+      AND d."offerId" = o."offerId"
+      AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId",   d."offerNo",d."gst"
 )
 UPDATE public."tEventOffer" AS o
@@ -621,33 +807,34 @@ SET
     "totalScanSupport%"     = s."totalScanSupport%",
 
     -- Supplier income (derived)
-    "totalSupplierIncome"   = s."totalScanSupport$" + s."totalScanSupport%" 
+    "totalSupplierIncome"   = s."totalScanSupport$" + s."totalScanSupport%"
 FROM EventOfferDtlSummaryForComboList s
 WHERE o."offerId" = s."offerId"
   AND o."eventId" = s."eventId"
   AND o."offerNumber" = s."offerNo";
 
-  	-- COMBO SKU LIST 
+      -- COMBO SKU LIST
 WITH EventOfferDtlSummaryForAdvPriceForComboList AS (
     SELECT
         d."offerId",
         d."eventId",
-		d."offerNo",
-		d."clearanceIndicator",
+        d."offerNo",
+        d."clearanceIndicator",
         d."gst" AS gst_value,
           -- Pricing logic as per C#
         MAX(d."advertisedPriceGst")                 AS "advPrice",
         MIN(d."calculatedSaveValue")        AS "saveValue",
         MIN(d."everydayPriceGst")              AS "everydayPrice",
         MIN(d."calculatedSavePercentage") AS "savePercent"
-		   
+
     FROM public."tEventOfferDetail" d
     INNER JOIN public."tEventOffer" o
         ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
     WHERE  (o."OfferTypeId" IN (25))
-	    AND d."offerNo" = o."offerNumber"
-	  AND d."offerId" = o."offerId"
-	  AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+        AND d."offerNo" = o."offerNumber"
+      AND d."offerId" = o."offerId"
+      AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+      AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId",   d."clearanceIndicator",d."offerNo",d."gst"
 ),
 RankedSkus AS (
@@ -669,6 +856,7 @@ RankedSkus AS (
           AND d."eventId" = o."eventId"
       WHERE o."OfferTypeId" IN (25)
         AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+        AND d."isSkuActive" = TRUE
   ),
    ComboSavePercent AS (
       SELECT
@@ -694,7 +882,7 @@ SET
     "advertisedPriceGst"    = ROUND(s."advPrice", 2),
     "saveValue"             = ROUND(s."saveValue", 2),
     "everydayPriceGst"      = ROUND(s."everydayPrice", 2),
-	"everydayPrice" 		= ROUND(s."everydayPrice" / (1 + s.gst_value),2),
+    "everydayPrice"         = ROUND(s."everydayPrice" / (1 + s.gst_value),2),
       "savePercent"        = COALESCE(csp."comboSavePercent", 0)
 FROM EventOfferDtlSummaryForAdvPriceForComboList s
  LEFT JOIN ComboSavePercent csp
@@ -708,12 +896,11 @@ WHERE o."offerId" = s."offerId"
 -- UPDATE tEventOffer For MultiBuy SKU List
 --===============================================================================================================
 
-  
   WITH EventOfferDtlSummaryForMultiBuySKUList AS (
     SELECT
         d."offerId",
         d."eventId",
-		d."offerNo",
+        d."offerNo",
         d."gst" AS gst_value,
 
         -- Forecast metrics
@@ -736,14 +923,15 @@ WHERE o."offerId" = s."offerId"
         -- Scan support
         SUM(COALESCE(d."scanSupport$", 0) * COALESCE(d."categoryforecast", 0)) AS "totalScanSupport$",
         ROUND(SUM((COALESCE(d."LatestEffectiveCost", 0) * (COALESCE(d."scanSupport%", 0)/100) * COALESCE(d."categoryforecast", 0))),2) AS "totalScanSupport%"
-		   
+
     FROM public."tEventOfferDetail" d
     INNER JOIN public."tEventOffer" o
         ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
-		
+
     WHERE  (o."OfferTypeId" IN (15))
-	  AND d."offerNo" = o."offerNumber"
-	  AND d."offerId" = o."offerId"
+      AND d."offerNo" = o."offerNumber"
+      AND d."offerId" = o."offerId"
+      AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId", d."offerNo",d."gst"
 )
 UPDATE public."tEventOffer" AS o
@@ -772,33 +960,33 @@ WHERE o."offerId" = s."offerId"
   AND o."eventId" = s."eventId"
   AND o."offerNumber" = s."offerNo";
 
-  	  WITH EventOfferDtlSummaryForAdvPriceForMultiBuySKUList AS (
+        WITH EventOfferDtlSummaryForAdvPriceForMultiBuySKUList AS (
     SELECT
         d."offerId",
         d."eventId",
-		d."offerNo",
+        d."offerNo",
         d."gst" AS gst_value,
-		d."clearanceIndicator",
+        d."clearanceIndicator",
        -- Pricing logic as per C#
         MAX(d."advertisedPriceGst")                 AS "advPrice",
         MIN(d."calculatedSaveValue")        AS "saveValue",
         MIN(d."everydayPriceGst")              AS "everydayPrice",
         MIN(d."calculatedSavePercentage") AS "savePercent"
-		   
+
     FROM public."tEventOfferDetail" d
     INNER JOIN public."tEventOffer" o
         ON d."offerId" = o."offerId" AND d."offerNo" = o."offerNumber" AND d."eventId" = o."eventId"
-		
+
     WHERE  (o."OfferTypeId" IN (15))
-	 
-	  AND d."offerNo" = o."offerNumber"
-	  AND d."offerId" = o."offerId"
-	 AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+
+      AND d."offerNo" = o."offerNumber"
+      AND d."offerId" = o."offerId"
+     AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+     AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId", d."clearanceIndicator", d."offerNo",d."gst"
 )
 UPDATE public."tEventOffer" AS o
 SET
-  
 
     -- Price + savings
     "advertisedPrice"       = ROUND(s."advPrice" / (1 + s.gst_value), 2),
@@ -806,8 +994,8 @@ SET
         "saveValue"             = ROUND(s."saveValue", 2)* o."requiredQuantity",
     "everydayPriceGst"      = ROUND(s."everydayPrice", 2),
     "calculatedSavePercent" = ROUND(s."savePercent", 2),
-	"everydayPrice" 		= ROUND(s."everydayPrice" / (1 + s.gst_value),2)
-	
+    "everydayPrice"         = ROUND(s."everydayPrice" / (1 + s.gst_value),2)
+
 FROM EventOfferDtlSummaryForAdvPriceForMultiBuySKUList s
 WHERE o."offerId" = s."offerId"
   AND o."eventId" = s."eventId"
@@ -821,7 +1009,7 @@ WHERE o."offerId" = s."offerId"
     SELECT
         d."offerId",
         d."eventId",
-		d."gst" AS gst_value,
+        d."gst" AS gst_value,
         -- Summed forecast values
         ROUND(SUM(COALESCE(d."forecastCost", 0)), 2)              AS "forecastCost",
         ROUND(SUM(COALESCE(d."forecastSales", 0)), 2)             AS "forecastSales",
@@ -846,11 +1034,11 @@ WHERE o."offerId" = s."offerId"
 
         -- Pricing
         MIN(d."everydayPrice")                       AS "everydayPrice",
-		MIN(d."everydayPriceGst")                       AS "everydayPriceGst",
+        MIN(d."everydayPriceGst")                       AS "everydayPriceGst",
         MIN(d."advertisedPriceGst")                  AS "advPrice",
         SUM(COALESCE(d."calculatedSaveValue", 0))                 AS "saveValue",
-		MIN(d."calculatedSavePercentage")                 AS "savePercent"
-		
+        MIN(d."calculatedSavePercentage")                 AS "savePercent"
+
     FROM public."tEventOfferDetail" d
     INNER JOIN public."tEventOffer" o
         ON d."offerId" = o."offerId" AND d."eventId" = o."eventId"
@@ -858,6 +1046,7 @@ WHERE o."offerId" = s."offerId"
         ON o."eventId" = ev."eventId"
     WHERE UPPER(ev."status") <> 'COMPLETED'
       AND (o."OfferTypeId" IN (23))
+      AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId",d."gst"
 )
 UPDATE public."tEventOffer" AS o
@@ -883,9 +1072,9 @@ SET
     "advertisedPrice"       = ROUND(s."advPrice" / (1 + s.gst_value), 2),
     "advertisedPriceGst"    = ROUND(s."advPrice", 2),
     "saveValue"             = ROUND(s."saveValue", 2),
-	"savePercent"             = ROUND(s."savePercent", 2),
+    "savePercent"             = ROUND(s."savePercent", 2),
     "everydayPriceGst"      = ROUND(s."everydayPriceGst", 2),
-	"everydayPrice"      = ROUND(s."everydayPrice", 2),
+    "everydayPrice"      = ROUND(s."everydayPrice", 2),
 
     -- Supplier income (derived)
     "totalSupplierIncome"   = s."totalScanSupport$" + s."totalScanSupport%" + COALESCE(o."spacePurchase", 0)
@@ -903,38 +1092,38 @@ WHERE o."offerId" = s."offerId"
         e."offerId",
         e."offerName",
         e."offerType",
-		e."OfferTypeId",
+        e."OfferTypeId",
         ev."status",
-        ROUND(SUM(CASE 
-		        WHEN COALESCE(e."everydayPriceGst", 0) > 9999999 THEN 0
-		        ELSE FLOOR(COALESCE(e."everydayPriceGst", 0))
-		    END), 2) AS "everydayPrice",
-			ROUND(SUM(CASE 
-		        WHEN COALESCE(e."advertisedPriceGst", 0) > 9999999 THEN 0
-		        ELSE FLOOR(COALESCE(e."advertisedPriceGst", 0))
-		    END), 2) AS "advertisedPrice",
-		SUM(
-		    CASE 
-		        WHEN COALESCE(e."saveValue", 0) > 9999999 THEN 0
-		        ELSE FLOOR(COALESCE(e."saveValue", 0))
-		    END
-		) AS "saveValue",
+        ROUND(SUM(CASE
+                WHEN COALESCE(e."everydayPriceGst", 0) > 9999999 THEN 0
+                ELSE ROUND(COALESCE(e."everydayPriceGst", 0),2)
+            END), 2) AS "everydayPrice",
+            ROUND(SUM(CASE
+                WHEN COALESCE(e."advertisedPriceGst", 0) > 9999999 THEN 0
+                ELSE ROUND(COALESCE(e."advertisedPriceGst", 0),2)
+            END), 2) AS "advertisedPrice",
+        SUM(
+            CASE
+                WHEN COALESCE(e."saveValue", 0) > 9999999 THEN 0
+                ELSE FLOOR(COALESCE(e."saveValue", 0))
+            END
+        ) AS "saveValue",
     CASE
-		    WHEN MIN(
-		        CASE 
-		            WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
-		            ELSE FLOOR(COALESCE(e."savePercent", 0))
-		        END
-		    ) < 5 THEN 0
-		    ELSE FLOOR(
-		        MIN(
-		            CASE 
-		                WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
-		                ELSE FLOOR(COALESCE(e."savePercent", 0))
-		            END
-		        ) / 5
-		    ) * 5
-		END AS "savePercent"
+            WHEN MIN(
+                CASE
+                    WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
+                    ELSE FLOOR(COALESCE(e."savePercent", 0),2)
+                END
+            ) < 5 THEN 0
+            ELSE FLOOR(
+                MIN(
+                    CASE
+                        WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
+                        ELSE FLOOR(COALESCE(e."savePercent", 0))
+                    END
+                ) / 5
+            ) * 5
+        END AS "savePercent"
 ,
         BOOL_OR(COALESCE(e."isClearance", FALSE)) AS clearance,
         BOOL_OR(COALESCE(e."isNew", FALSE)) AS new,
@@ -957,7 +1146,7 @@ UPDATE public."tMudMapDetail" AS m
 SET
     "offerName" = c."offerName",
     "offerType" = c."offerType",
-	"offerTypeId" = c."OfferTypeId",
+    "offerTypeId" = c."OfferTypeId",
     "advertisedPrice" = c."advertisedPrice",
     "everydayPrice" = COALESCE(c."everydayPrice", m."everydayPrice"),
     "savePercent" = c."savePercent",
@@ -986,33 +1175,33 @@ WITH MultiBuyOffersSKUList AS (
         e."offerId",
         e."offerName",
         e."offerType",
-		e."OfferTypeId",
+        e."OfferTypeId",
         UPPER(ev."status"),
-        FLOOR(COALESCE(e."totalMultiBuyPrice", 0)) AS "advertisedPrice",
-        FLOOR(MIN(e."everydayPriceGst")) AS "everydayPrice",
-		SUM(
-		    CASE 
-		        WHEN COALESCE(e."saveValue", 0) > 9999999 THEN 0
-		        ELSE FLOOR(COALESCE(e."saveValue", 0))
-		    END
-		) AS "saveValue",
-		
+        ROUND(COALESCE(e."totalMultiBuyPrice", 0),2) AS "advertisedPrice",
+        ROUND(MIN(e."everydayPriceGst"),2) AS "everydayPrice",
+        SUM(
+            CASE
+                WHEN COALESCE(e."saveValue", 0) > 9999999 THEN 0
+                ELSE FLOOR(COALESCE(e."saveValue", 0))
+            END
+        ) AS "saveValue",
+
         CASE
-		    WHEN SUM(
-		        CASE 
-		            WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
-		            ELSE FLOOR(COALESCE(e."savePercent", 0))
-		        END
-		    ) < 5 THEN 0
-		    ELSE FLOOR(
-		        SUM(
-		            CASE 
-		                WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
-		                ELSE FLOOR(COALESCE(e."savePercent", 0))
-		            END
-		        ) / 5
-		    ) * 5
-		END AS "savePercent",
+            WHEN SUM(
+                CASE
+                    WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
+                    ELSE FLOOR(COALESCE(e."savePercent", 0))
+                END
+            ) < 5 THEN 0
+            ELSE FLOOR(
+                SUM(
+                    CASE
+                        WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
+                        ELSE FLOOR(COALESCE(e."savePercent", 0))
+                    END
+                ) / 5
+            ) * 5
+        END AS "savePercent",
         BOOL_OR(COALESCE(e."isClearance", FALSE)) AS clearance,
         BOOL_OR(COALESCE(e."isNew", FALSE)) AS new,
         BOOL_OR(COALESCE(e."isRewards", FALSE)) AS loyality,
@@ -1034,7 +1223,7 @@ UPDATE public."tMudMapDetail" AS m
 SET
     "offerName" = mb."offerName",
     "offerType" = mb."offerType",
-	"offerTypeId" = mb."OfferTypeId",
+    "offerTypeId" = mb."OfferTypeId",
     "advertisedPrice" = mb."advertisedPrice",
     "everydayPrice" = COALESCE(mb."everydayPrice", m."everydayPrice"),
     "savePercent" = mb."savePercent",
@@ -1072,49 +1261,49 @@ RegularOffers AS (
         e."offerId",
         e."offerName",
         e."offerType",
-		e."OfferTypeId",
+        e."OfferTypeId",
         UPPER(ev."status"),
-			CASE
+            CASE
               WHEN e."fromPrice" = true
-              THEN FLOOR(eod."minFromPrice")
-	  ELSE
+              THEN ROUND(eod."minFromPrice",2)
+      ELSE
+        ROUND(SUM(
+            CASE
+                WHEN COALESCE(e."advertisedPriceGst", 0) > 9999999 THEN 0
+                ELSE COALESCE(e."advertisedPriceGst", 0)
+            END
+        ),2) END AS "advertisedPrice",
+
+        ROUND(SUM(
+            CASE
+                WHEN COALESCE(e."everydayPriceGst", 0) > 9999999 THEN 0
+                ELSE COALESCE(e."everydayPriceGst", 0)
+            END
+        ),2) AS "everydayPriceGST",
+
         FLOOR(SUM(
-		    CASE 
-		        WHEN COALESCE(e."advertisedPriceGst", 0) > 9999999 THEN 0
-		        ELSE COALESCE(e."advertisedPriceGst", 0)
-		    END
-		)) END AS "advertisedPrice",
-		
-		FLOOR(SUM(
-		    CASE 
-		        WHEN COALESCE(e."everydayPriceGst", 0) > 9999999 THEN 0
-		        ELSE COALESCE(e."everydayPriceGst", 0)
-		    END
-		)) AS "everydayPriceGST",
-		
-		FLOOR(SUM(
-		    CASE 
-		        WHEN COALESCE(e."saveValue", 0) > 9999999 THEN 0
-		        ELSE COALESCE(e."saveValue", 0)
-		    END
-		)) AS "saveValue",
-		
-		CASE
-		    WHEN SUM(
-		        CASE 
-		            WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
-		            ELSE FLOOR(COALESCE(e."savePercent", 0))
-		        END
-		    ) < 5 THEN 0
-		    ELSE FLOOR(
-		        SUM(
-		            CASE 
-		                WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
-		                ELSE FLOOR(COALESCE(e."savePercent", 0))
-		            END
-		        ) / 5
-		    ) * 5
-		END AS "savePercent",
+            CASE
+                WHEN COALESCE(e."saveValue", 0) > 9999999 THEN 0
+                ELSE COALESCE(e."saveValue", 0)
+            END
+        )) AS "saveValue",
+
+        CASE
+            WHEN SUM(
+                CASE
+                    WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
+                    ELSE FLOOR(COALESCE(e."savePercent", 0))
+                END
+            ) < 5 THEN 0
+            ELSE FLOOR(
+                SUM(
+                    CASE
+                        WHEN COALESCE(e."savePercent", 0) > 9999999 THEN 0
+                        ELSE FLOOR(COALESCE(e."savePercent", 0))
+                    END
+                ) / 5
+            ) * 5
+        END AS "savePercent",
 
         BOOL_OR(COALESCE(e."isClearance", FALSE)) AS clearance,
         BOOL_OR(COALESCE(e."isNew", FALSE)) AS new,
@@ -1126,10 +1315,9 @@ RegularOffers AS (
         e."freeQuantity" AS "FreeQuantity"
     FROM public."tEventOffer" AS e
     INNER JOIN public."tEvent" AS ev ON e."eventId" = ev."eventId"
-	 LEFT JOIN EventOfferDetailAgg as eod ON eod."eventId"=e."eventId" AND eod."offerId"=e."offerId"
-     
-   
-    WHERE e."OfferTypeId" NOT IN (4,15) 
+     LEFT JOIN EventOfferDetailAgg as eod ON eod."eventId"=e."eventId" AND eod."offerId"=e."offerId"
+
+    WHERE e."OfferTypeId" NOT IN (4,15)
       AND e."OfferTypeId" <> 3
       AND e."OfferTypeId" <> 5
       AND UPPER(ev."status") <> 'COMPLETED'
@@ -1141,11 +1329,11 @@ UPDATE public."tMudMapDetail" AS m
 SET
     "offerName" = r."offerName",
     "offerType" = r."offerType",
-	"offerTypeId" = r."OfferTypeId",
+    "offerTypeId" = r."OfferTypeId",
     "advertisedPrice" = r."advertisedPrice",
     "savePercent" = r."savePercent",
     "saveValue" = r."saveValue",
-	"everydayPrice" = r."everydayPriceGST",
+    "everydayPrice" = r."everydayPriceGST",
     clearance = r.clearance,
     new = r.new,
     loyality = r.loyality,
@@ -1159,7 +1347,7 @@ FROM RegularOffers AS r
 WHERE m."eventId" = r."eventId"
   AND m."eventOfferId" = r."offerId"
  ;
-  
+
   RAISE NOTICE 'Event offer details updated successfully for all SKUs.';
 
   v_end_time := clock_timestamp();
@@ -1174,7 +1362,7 @@ EXCEPTION
     WHEN OTHERS THEN
         v_end_time := clock_timestamp();
 
-		 RAISE LOG 'Daily_Refresh_Job_Failed';
+         RAISE LOG 'Daily_Refresh_Job_Failed';
 
         UPDATE execution_log
         SET status      = 'FAILED',
@@ -1184,8 +1372,5 @@ EXCEPTION
 
         RAISE;
 
-		
 END;
 $BODY$;
-ALTER PROCEDURE public.sp_update_event_offer_detailscombomultibuypriceonlyskulist()
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

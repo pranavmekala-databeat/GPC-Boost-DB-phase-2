@@ -1,5 +1,10 @@
-CREATE OR REPLACE PROCEDURE public.run_inbound_cron()
-LANGUAGE plpgsql
+-- PROCEDURE: public.run_inbound_cron()
+
+-- DROP PROCEDURE IF EXISTS public.run_inbound_cron();
+
+CREATE OR REPLACE PROCEDURE public.run_inbound_cron(
+	)
+LANGUAGE 'plpgsql'
 AS $BODY$
 BEGIN
     -- Step 1
@@ -47,9 +52,16 @@ BEGIN
         RAISE EXCEPTION 'Aborting: Rolling back entire batch';
     END;
 
+	-- Step 6
+    BEGIN
+        CALL public.sp_update_offer_and_sku_details();
+        RAISE NOTICE 'Step 6 completed';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Step 6 FAILED: %', SQLERRM;
+        RAISE EXCEPTION 'Aborting: Rolling back entire batch';
+    END;
+
     RAISE NOTICE 'All steps completed successfully.';
 
 END;
 $BODY$;
-ALTER PROCEDURE public.run_inbound_cron()
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

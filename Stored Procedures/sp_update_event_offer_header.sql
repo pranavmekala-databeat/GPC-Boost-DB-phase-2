@@ -1,8 +1,12 @@
+-- PROCEDURE: public.sp_update_event_offer_header(integer, integer, integer)
+
+-- DROP PROCEDURE IF EXISTS public.sp_update_event_offer_header(integer, integer, integer);
+
 CREATE OR REPLACE PROCEDURE public.sp_update_event_offer_header(
 	IN p_offer_id integer,
 	IN p_offer_no integer,
 	IN p_offer_type_id integer)
-LANGUAGE plpgsql
+LANGUAGE 'plpgsql'
 AS $BODY$
 DECLARE 
     v_gst numeric;
@@ -61,6 +65,7 @@ BEGIN
 	  AND d."offerNo" = p_offer_no
 	  AND d."offerId" = p_offer_id
 	  AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+      AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId", d."offerNo", d."clearanceIndicator"
 )
 UPDATE public."tEventOffer" AS o
@@ -111,6 +116,7 @@ WHERE o."offerId" = s."offerId"
     WHERE  (o."OfferTypeId" IN (6))
 	  AND d."offerNo" = p_offer_no
 	  AND d."offerId" = p_offer_id
+       AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId", d."offerNo"
 )
 UPDATE public."tEventOffer" AS o
@@ -173,6 +179,7 @@ WITH EventOfferDtlSummaryForStdRangePrice AS (
     WHERE  (o."OfferTypeId" IN (14))
 	  AND d."offerNo" = p_offer_no
 	  AND d."offerId" = p_offer_id
+        AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId",   d."offerNo"
 )
 UPDATE public."tEventOffer" AS o
@@ -220,6 +227,7 @@ WHERE o."offerId" = s."offerId"
 	  AND d."offerNo" = p_offer_no
 	  AND d."offerId" = p_offer_id
 	  AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+        AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId",  d."clearanceIndicator", d."offerNo"
 )
 UPDATE public."tEventOffer" AS o
@@ -273,6 +281,7 @@ WITH EventOfferDtlSummaryForComboList AS (
     WHERE  (o."OfferTypeId" IN (25))
 	  AND d."offerNo" = p_offer_no
 	  AND d."offerId" = p_offer_id
+        AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId",   d."offerNo"
 )
 UPDATE public."tEventOffer" AS o
@@ -321,6 +330,7 @@ WITH EventOfferDtlSummaryForAdvPriceForComboList AS (
 	  AND d."offerNo" = p_offer_no
 	  AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
 	  AND d."offerId" = p_offer_id
+        AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId",   d."clearanceIndicator",d."offerNo"
 )
 UPDATE public."tEventOffer" AS o
@@ -377,6 +387,7 @@ WHERE o."offerId" = s."offerId"
     WHERE  (o."OfferTypeId" IN (15))
 	  AND d."offerNo" = p_offer_no
 	  AND d."offerId" = p_offer_id
+         AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId", d."offerNo"
 )
 UPDATE public."tEventOffer" AS o
@@ -426,6 +437,7 @@ WHERE o."offerId" = s."offerId"
 	  AND d."offerNo" = p_offer_no
 	  AND d."offerId" = p_offer_id
 	 AND (d."clearanceIndicator" <> 'Y' OR d."clearanceIndicator" IS NULL)
+        AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId", d."clearanceIndicator", d."offerNo"
 )
 UPDATE public."tEventOffer" AS o
@@ -489,6 +501,7 @@ END IF;
     WHERE  (o."OfferTypeId" IN (23))
 	  AND d."offerNo" = p_offer_no
 	  AND d."offerId" = p_offer_id
+        AND d."isSkuActive" = TRUE
     GROUP BY d."offerId", d."eventId", d."offerNo"
 )
 UPDATE public."tEventOffer" AS o

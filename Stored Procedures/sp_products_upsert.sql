@@ -1,8 +1,15 @@
-CREATE OR REPLACE PROCEDURE public.sp_products_upsert()
-LANGUAGE plpgsql
+-- PROCEDURE: public.sp_products_upsert()
+
+-- DROP PROCEDURE IF EXISTS public.sp_products_upsert();
+
+CREATE OR REPLACE PROCEDURE public.sp_products_upsert(
+	)
+LANGUAGE 'plpgsql'
 AS $BODY$
 DECLARE
     v_insert_count INTEGER := 0;
+    -- CHANGE: Added variable to track inactive record count
+    v_marked_inactive INTEGER := 0;
     v_start_time   TIMESTAMP;
     v_temp_count   INTEGER := 0;
     v_step_time    TIMESTAMP;
@@ -79,6 +86,22 @@ BEGIN
 
     RAISE NOTICE '[Step 2A] Created temp indexes and analyzed in % ms',
         EXTRACT(MILLISECOND FROM (clock_timestamp() - v_step_time));
+
+    -- CHANGE: Mark records as inactive if they're not in today's data
+    UPDATE public."tProducts"
+    SET "isActive" = FALSE,
+        "updatedAt" = (NOW() AT TIME ZONE 'Australia/Sydney')
+    WHERE "isActive" = TRUE
+      AND NOT EXISTS (
+          SELECT 1
+          FROM temp_products_normalized t
+          WHERE t.sku = "tProducts".sku
+            AND t.normalized_country = "tProducts".country
+      );
+
+    -- CHANGE: Get count of records marked as inactive
+    GET DIAGNOSTICS v_marked_inactive = ROW_COUNT;
+    RAISE NOTICE 'Marked % existing records as inactive', v_marked_inactive;
 
     -------------------------------------------------------------------
     -- STEP 3: Main UPSERT (WITH DISTINCT ON)
@@ -331,7 +354,8 @@ BEGIN
         "nationalAvgCost", "trueLandedCost", "generalProvision",
         "importVariant", "currencyGain", rebate,
         "nationalAverageCostInternalLoading",
-        "createdAt", "updatedAt"
+        -- CHANGE: Added isActive column to INSERT
+        "isActive", "createdAt", "updatedAt"
     )
     SELECT DISTINCT ON (jd.sku, jd.normalized_country)
         jd.sku,
@@ -409,6 +433,8 @@ BEGIN
         jd.rebate,
         jd."internalLoading",
 
+        -- CHANGE: Mark all new/updated records as active
+        TRUE AS "isActive",
         (NOW() AT TIME ZONE 'Australia/Sydney'),
         (NOW() AT TIME ZONE 'Australia/Sydney')
 
@@ -497,6 +523,8 @@ BEGIN
     "nationalAverageCostInternalLoading" =
         EXCLUDED."nationalAverageCostInternalLoading",
 
+    -- CHANGE: Reactivate records if they were inactive
+    "isActive" = TRUE,
     "updatedAt" = (NOW() AT TIME ZONE 'Australia/Sydney')
     WHERE ROW(
     public."tProducts".sku,
@@ -561,7 +589,7 @@ BEGIN
     public."tProducts"."currencyGain",
     public."tProducts".rebate,
     public."tProducts"."nationalAverageCostInternalLoading"
-    
+
 )
 IS DISTINCT FROM
 ROW(
@@ -627,7 +655,7 @@ ROW(
     EXCLUDED."currencyGain",
     EXCLUDED.rebate,
     EXCLUDED."nationalAverageCostInternalLoading"
-   
+
 );
 
     GET DIAGNOSTICS v_insert_count = ROW_COUNT;
@@ -643,6 +671,8 @@ ROW(
     RAISE NOTICE '========================================';
     RAISE NOTICE 'sp_products_upsert completed successfully';
     RAISE NOTICE 'Total rows affected: %', v_insert_count;
+    -- CHANGE: Added inactive count to final log message
+    RAISE NOTICE 'Records marked inactive: %', v_marked_inactive;
     RAISE NOTICE 'Total execution time: % ms',
         EXTRACT(MILLISECOND FROM (clock_timestamp() - v_start_time));
     RAISE NOTICE '========================================';
@@ -674,5 +704,3 @@ EXCEPTION
         RAISE EXCEPTION 'Error in sp_products_upsert: % - %', SQLERRM, SQLSTATE;
 END;
 $BODY$;
-ALTER PROCEDURE public.sp_products_upsert()
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

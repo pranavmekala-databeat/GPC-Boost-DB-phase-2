@@ -1,8 +1,9 @@
--- View: public."vwUpdHybExpBuyXGetYFreeAU"
+-- View: public.vwUpdHybExpBuyXGetYFreeAU
 
 -- DROP VIEW public."vwUpdHybExpBuyXGetYFreeAU";
 
-CREATE OR REPLACE VIEW public."vwUpdHybExpBuyXGetYFreeAU" AS
+CREATE OR REPLACE VIEW public."vwUpdHybExpBuyXGetYFreeAU"
+ AS
  SELECT DISTINCT concat('C', 'AUS', 'E', eoh_new."eventId", 'P', eoh_new.page, 'P',
         CASE
             WHEN eoh_new."pagePosition" = 0 THEN eoh_new."offerId"
@@ -32,10 +33,10 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpBuyXGetYFreeAU" AS
     'default.png'::text AS "PROMO_IMAGE",
     eh_new."salesKeyword" AS "SALE_KEYWORDS"
    FROM "tEvent" eh_new
-     JOIN "tEventOffer" eoh_new ON eh_new."eventId" = eoh_new."eventId"
+     JOIN "tEventOffer" eoh_new ON eh_new."eventId" = eoh_new."eventId" and eoh_new."isOfferActive"=true
      JOIN "tOfferType" lbot_new ON upper(eoh_new."commercialOfferType"::text) = upper(lbot_new."offerType"::text) AND eh_new.country::text = lbot_new.country::text
      LEFT JOIN "tHybrisStickerText" lbhst_new ON eoh_new."hybrisStickerText"::text = lbhst_new."hybrisStickerText"::text AND eh_new.country::text = lbhst_new.country::text
   WHERE eh_new.locked = true AND COALESCE(eoh_new."isNotAvailableOnline", false) = false AND lbot_new."offerTypeId" = 5 AND eoh_new."advertisedPrice" > 0::numeric OR eoh_new."offerNumber" = 2 AND eoh_new."advertisedPrice" = 0::numeric AND "left"(eh_new."eventType"::text, 3) <> 'LOY'::text AND eh_new.country::text = 'AU'::text AND NOT (eh_new."eventType"::text = 'Retail Catalogue'::text AND eoh_new."pagePosition" = 0);
 
-ALTER TABLE public."vwUpdHybExpBuyXGetYFreeAU"
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
+
+

@@ -1,8 +1,9 @@
--- View: public."vwUpdHybExpComboDtlNZ"
+-- View: public.vwUpdHybExpComboDtlNZ
 
 -- DROP VIEW public."vwUpdHybExpComboDtlNZ";
 
-CREATE OR REPLACE VIEW public."vwUpdHybExpComboDtlNZ" AS
+CREATE OR REPLACE VIEW public."vwUpdHybExpComboDtlNZ"
+ AS
  WITH base AS (
          SELECT eh."eventId",
             eoh.page,
@@ -25,10 +26,10 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpComboDtlNZ" AS
             string_agg(eod.sku::text, ','::text ORDER BY (eod.sku::text)) AS "PRODUCTS",
             eh."salesKeyword"::text AS "SALE_KEYWORDS"
            FROM "tEvent" eh
-             JOIN "tEventOffer" eoh ON eh."eventId" = eoh."eventId"
+             JOIN "tEventOffer" eoh ON eh."eventId" = eoh."eventId" and eoh."isOfferActive"=true
              JOIN "tOfferType" ot ON upper(eoh."commercialOfferType"::text) = upper(ot."offerType"::text) AND eh.country::text = ot.country::text
-             JOIN "tEventOfferDetail" eod ON eod."eventId" = eoh."eventId" AND eod.page = eoh.page AND eod."pagePosition" = eoh."pagePosition" AND eod."offerId" = eoh."offerId" AND eod."offerNo" = eoh."offerNumber"
-          WHERE eh.locked = true AND COALESCE(eoh."isNotAvailableOnline", false) = false AND eoh."advertisedPrice" > 0::numeric AND "left"(eh."eventType"::text, 3) <> 'LOY'::text AND eh.country::text = 'NZ'::text AND (ot."offerTypeId" = ANY (ARRAY[3, 15, 25])) AND NOT (eh."eventType"::text = 'Retail Catalogue'::text AND eoh."pagePosition" = 0)
+             JOIN "tEventOfferDetail" eod ON eod."eventId" = eoh."eventId" AND eod.page = eoh.page AND eod."pagePosition" = eoh."pagePosition" AND eod."offerId" = eoh."offerId" AND eod."offerNo" = eoh."offerNumber" and eod."isSkuActive"=true
+          WHERE eh.locked = true AND COALESCE(eoh."isNotAvailableOnline", false) = false AND eoh."advertisedPrice" > 0::numeric AND "left"(eh."eventType"::text, 3) <> 'LOY'::text AND eh.country::text = 'NZ'::text AND (ot."offerTypeId" = ANY (ARRAY[3, 15, 25])) AND eod."isSkuActive" = true AND NOT (eh."eventType"::text = 'Retail Catalogue'::text AND eoh."pagePosition" = 0)
           GROUP BY eh."eventId", eoh.page, eoh."pagePosition", eoh."offerId", eoh."offerNumber", ot."offerTypeId", eh."salesKeyword"
         ), exploded AS (
          SELECT b."eventId",
@@ -81,5 +82,5 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpComboDtlNZ" AS
     "SALE_KEYWORDS"
    FROM chunked;
 
-ALTER TABLE public."vwUpdHybExpComboDtlNZ"
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
+
+

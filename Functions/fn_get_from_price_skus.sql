@@ -1,3 +1,7 @@
+-- FUNCTION: public.fn_get_from_price_skus(integer)
+
+-- DROP FUNCTION IF EXISTS public.fn_get_from_price_skus(integer);
+
 CREATE OR REPLACE FUNCTION public.fn_get_from_price_skus(
 	p_offerid integer)
     RETURNS TABLE(skus text, advprice numeric) 
@@ -24,6 +28,7 @@ AS $BODY$
 			  AND eod."advertisedPriceGst" >= 1
                 AND inv."onHand" > 0
                 AND (p."clearance" IS NULL OR p."clearance" <> 'Y')
+                AND p."isActive" = TRUE
           ) INTO v_hasCriteriaMet;
 
           -- Get the lowest price based on criteria
@@ -37,7 +42,8 @@ AS $BODY$
                WHERE eod."offerId" = p_offerId
 			   AND eod."advertisedPriceGst" >= 1
                  AND inv."onHand" > 0
-                 AND (p."clearance" IS NULL OR p."clearance" <> 'Y')),
+                 AND (p."clearance" IS NULL OR p."clearance" <> 'Y')
+                 AND p."isActive" = TRUE),
               (SELECT MIN(eod."advertisedPriceGst")
                FROM "tEventOfferDetail" eod
                WHERE eod."offerId" = p_offerId
@@ -57,7 +63,8 @@ AS $BODY$
                 AND eod."advertisedPriceGst" = v_lowestPrice
 				AND eod."advertisedPriceGst" >= 1
                 AND inv."onHand" > 0
-                AND (p."clearance" IS NULL OR p."clearance" <> 'Y');
+                AND (p."clearance" IS NULL OR p."clearance" <> 'Y')
+                AND p."isSkuActive" = TRUE;
           ELSE
               SELECT STRING_AGG(eod."sku", ',')
               INTO v_skuList
@@ -73,6 +80,3 @@ AS $BODY$
 
   
 $BODY$;
-
-ALTER FUNCTION public.fn_get_from_price_skus(p_offerid integer)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

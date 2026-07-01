@@ -1,8 +1,9 @@
--- View: public."vwUpdHybExpLoyComboNZ"
+-- View: public.vwUpdHybExpLoyComboNZ
 
 -- DROP VIEW public."vwUpdHybExpLoyComboNZ";
 
-CREATE OR REPLACE VIEW public."vwUpdHybExpLoyComboNZ" AS
+CREATE OR REPLACE VIEW public."vwUpdHybExpLoyComboNZ"
+ AS
  SELECT DISTINCT concat('C', 'NZ', 'E', eo."eventId"::text, 'P', eo.page::text, 'P',
         CASE
             WHEN eo."pagePosition" = 0 THEN eo."offerId"::text
@@ -44,10 +45,10 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpLoyComboNZ" AS
         END AS "VALUE",
     ev."salesKeyword" AS "SALE_KEYWORDS"
    FROM "tEvent" ev
-     JOIN "tEventOffer" eo ON ev."eventId" = eo."eventId"
+     JOIN "tEventOffer" eo ON ev."eventId" = eo."eventId" and eo."isOfferActive"=true
      JOIN "tOfferType" ot ON eo."commercialOfferType"::text = ot."offerType"::text AND ev.country::text = ot.country::text
      LEFT JOIN "tHybrisStickerText" hst ON eo."hybrisStickerText"::text = hst."hybrisStickerText"::text AND ev.country::text = hst.country::text
   WHERE ev.locked = true AND eo."isNotAvailableOnline" = false AND eo."advertisedPrice" > 0::numeric AND (ot."offerTypeId" = ANY (ARRAY[3, 103, 15, 115, 25])) AND eo."isRewards" = true AND ev.country::text = 'NZ'::text AND NOT (ev."eventType"::text = 'Retail Catalogue'::text AND eo."pagePosition" = 0);
 
-ALTER TABLE public."vwUpdHybExpLoyComboNZ"
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
+
+

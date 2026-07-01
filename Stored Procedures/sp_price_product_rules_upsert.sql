@@ -1,11 +1,18 @@
-CREATE OR REPLACE PROCEDURE public.sp_price_product_rules_upsert()
-LANGUAGE plpgsql
+-- PROCEDURE: public.sp_price_product_rules_upsert()
+
+-- DROP PROCEDURE IF EXISTS public.sp_price_product_rules_upsert();
+
+CREATE OR REPLACE PROCEDURE public.sp_price_product_rules_upsert(
+	)
+LANGUAGE 'plpgsql'
 AS $BODY$
   DECLARE
       v_total INT;
       v_deleted_infinity INT := 0;
       v_inserted INT := 0;
       v_updated INT := 0;
+      -- CHANGE: Added variable to track inactive record count
+      v_marked_inactive INT := 0;
       v_final_data_count INT := 0;
       v_start_time TIMESTAMPTZ := NOW() AT TIME ZONE 'Australia/Sydney';
       v_end_time TIMESTAMPTZ;
@@ -15,6 +22,9 @@ AS $BODY$
       VALUES ('sp_price_product_rules_upsert', 'STARTED', v_start_time);
 
       RAISE INFO 'Price Product Rules Upsert Started at %', v_start_time;
+
+      -- Skip the entire process when the source temp table is empty (no action taken)
+      IF EXISTS (SELECT 1 FROM public."tPriceProductRules_temp") THEN
 
       -- 1: Create indexes on temp table if not exist
       CREATE INDEX IF NOT EXISTS idx_temp_lookup
@@ -75,6 +85,24 @@ AS $BODY$
       ANALYZE temp_records_to_process;
 
       RAISE INFO 'Records to process: % rows at %', (SELECT COUNT(*) FROM temp_records_to_process), NOW();
+
+      -- CHANGE: Mark records as inactive if they're not in today's data
+      UPDATE public."tPriceProductRules"
+      SET "isActive" = FALSE,
+          "updatedAt" = NOW()
+      WHERE "isActive" = TRUE
+        AND NOT EXISTS (
+            SELECT 1
+            FROM temp_records_to_process t
+            WHERE t.company = "tPriceProductRules".company
+              AND t."supplierId" = "tPriceProductRules"."supplierId"
+              AND t.country = "tPriceProductRules".country
+              AND t.sku = "tPriceProductRules".sku
+        );
+
+      -- CHANGE: Get count of records marked as inactive
+      GET DIAGNOSTICS v_marked_inactive = ROW_COUNT;
+      RAISE INFO 'Marked % existing records as inactive at %', v_marked_inactive, NOW();
 
       -- 5: Clean up temp table
       DELETE FROM public."tPriceProductRules_temp" t
@@ -421,7 +449,9 @@ AS $BODY$
           "pricePoint4", "pricePoint5", "pricePoint6", "pricePointer", "percentVariance", "percentPriceAdjustment",
           "pricePoint6IncludingPromotions", "pricePoint6IncludingGst", "pricePoint6RetailNetDiscount",
           "retailPriceSpecial", "retailClearancePrice", "priceControlPlan", "priceWatchPlan", "manufacturerSupportPlan",
-          "keytypeTool", "keyTypePlanMethod", "deliveredDutyPaidMethod", "exchangeRatePrice", "createdAt", "updatedAt"
+          "keytypeTool", "keyTypePlanMethod", "deliveredDutyPaidMethod", "exchangeRatePrice",
+          -- CHANGE: Added isActive column to INSERT
+          "isActive", "createdAt", "updatedAt"
       )
       SELECT
           country, "supplierId", sku, company, "startDate", "endDate",
@@ -430,10 +460,12 @@ AS $BODY$
           "pricePoint6IncludingPromotions", "pricePoint6IncludingGst", "pricePoint6RetailNetDiscount",
           "retailPriceSpecial", "retailClearancePrice", "priceControlPlan", "priceWatchPlan", "manufacturerSupportPlan",
           "keytypeTool", "keyTypePlanMethod", "deliveredDutyPaidMethod", "exchangeRatePrice",
+          -- CHANGE: Mark all new/updated records as active
+          TRUE AS "isActive",
           NOW() AS "createdAt",
           NULL AS "updatedAt"
       FROM temp_final_data_dedup
-      ON CONFLICT (company, country, "supplierId", sku)
+      ON CONFLICT (company,"supplierId",country, sku)
       DO UPDATE SET
           "startDate" = EXCLUDED."startDate",
           "endDate"   = EXCLUDED."endDate",
@@ -461,6 +493,8 @@ AS $BODY$
           "keyTypePlanMethod" = EXCLUDED."keyTypePlanMethod",
           "deliveredDutyPaidMethod" = EXCLUDED."deliveredDutyPaidMethod",
           "exchangeRatePrice" = EXCLUDED."exchangeRatePrice",
+          -- CHANGE: Reactivate records if they were inactive
+          "isActive" = TRUE,
           "updatedAt" = NOW();
 
       GET DIAGNOSTICS v_total = ROW_COUNT;
@@ -480,6 +514,10 @@ AS $BODY$
       DROP TABLE IF EXISTS temp_final_data;
       DROP TABLE IF EXISTS temp_final_data_dedup;
 
+      ELSE
+          RAISE INFO 'tPriceProductRules_temp is empty - skipping (no action taken)';
+      END IF;
+
       v_end_time := NOW() AT TIME ZONE 'Australia/Sydney';
 
       -- Log end
@@ -488,11 +526,10 @@ AS $BODY$
               EXTRACT(MILLISECOND FROM (v_end_time - v_start_time)));
 
       RAISE INFO 'Price Product Rules Upsert Completed at %', v_end_time;
-      RAISE INFO 'Total rows: %, Inserted: %, Updated: %, Deleted infinity: %',
-                 v_total, v_inserted, v_updated, v_deleted_infinity;
+      -- CHANGE: Updated final log to include inactive count
+      RAISE INFO 'Total rows: %, Inserted: %, Updated: %, Marked Inactive: %, Deleted infinity: %',
+                 v_total, v_inserted, v_updated, v_marked_inactive, v_deleted_infinity;
 
   END;
-  
+
 $BODY$;
-ALTER PROCEDURE public.sp_price_product_rules_upsert()
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

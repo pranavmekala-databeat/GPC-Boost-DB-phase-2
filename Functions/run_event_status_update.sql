@@ -1,4 +1,9 @@
-CREATE OR REPLACE FUNCTION public.run_event_status_update()
+-- FUNCTION: public.run_event_status_update()
+
+-- DROP FUNCTION IF EXISTS public.run_event_status_update();
+
+CREATE OR REPLACE FUNCTION public.run_event_status_update(
+	)
     RETURNS void
     LANGUAGE 'plpgsql'
     COST 100
@@ -15,6 +20,3 @@ BEGIN
     RAISE NOTICE 'Updated expired events to Completed.';
 END;
 $BODY$;
-
-ALTER FUNCTION public.run_event_status_update()
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

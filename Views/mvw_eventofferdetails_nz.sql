@@ -1,8 +1,9 @@
--- Materialized View: public.mvw_eventofferdetails_nz
+-- View: public.mvw_eventofferdetails_nz
 
--- DROP MATERIALIZED VIEW public.mvw_eventofferdetails_nz;
+-- DROP MATERIALIZED VIEW IF EXISTS public.mvw_eventofferdetails_nz;
 
 CREATE MATERIALIZED VIEW public.mvw_eventofferdetails_nz
+TABLESPACE pg_default
 AS
  SELECT "tblEVENTOFFERDTL_Legacy"."EVENTID",
     "tblEVENTOFFERDTL_Legacy"."PAGE",
@@ -165,10 +166,7 @@ UNION ALL
     "tEventOfferDetail"."clearanceIndicator" AS "RAUCLRIND",
     NULL::numeric AS "OM"
    FROM "tEventOfferDetail"
-     JOIN "tEventOffer" ON "tEventOffer"."offerId" = "tEventOfferDetail"."offerId" AND "tEventOffer"."offerNumber" = "tEventOfferDetail"."offerNo"
+     JOIN "tEventOffer" ON "tEventOffer"."offerId" = "tEventOfferDetail"."offerId" AND "tEventOffer"."offerNumber" = "tEventOfferDetail"."offerNo" AND "tEventOffer"."isOfferActive" = true
      JOIN "tEvent" ON "tEvent"."eventId" = "tEventOfferDetail"."eventId" AND "tEvent".country::text = "tEventOfferDetail".country::text
-  WHERE "tEventOfferDetail".country::text = 'NZ'::text AND upper("tEvent".status::text) <> 'CANCELLED'::text AND ("tEventOfferDetail"."pagePosition" <> 0 AND upper("tEvent"."eventType"::text) = 'RETAIL CATALOGUE'::text OR upper("tEvent"."eventType"::text) <> 'RETAIL CATALOGUE'::text)
-WITH NO DATA;
-
-ALTER TABLE public.mvw_eventofferdetails_nz
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
+  WHERE (upper("tEvent".status::text) IN ('OPEN'::text, 'LOCKED'::text) AND "tEventOfferDetail"."isSkuActive" = true OR upper("tEvent".status::text) IN('COMPLETED'::text, 'CANCELLED'::text)) AND "tEventOfferDetail".country::text = 'NZ'::text AND upper("tEvent".status::text) <> 'CANCELLED'::text AND ("tEventOfferDetail"."pagePosition" <> 0 AND upper("tEvent"."eventType"::text) = 'RETAIL CATALOGUE'::text OR upper("tEvent"."eventType"::text) <> 'RETAIL CATALOGUE'::text)
+WITH DATA;

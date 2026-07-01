@@ -1,3 +1,7 @@
+-- FUNCTION: public.spMarketingExtract(integer)
+
+-- DROP FUNCTION IF EXISTS public."spMarketingExtract"(integer);
+
 CREATE OR REPLACE FUNCTION public."spMarketingExtract"(
 	p_event_id integer)
     RETURNS TABLE("EVENTID" integer, "EVENTDESC" character varying, "COUNTRY" character varying, "CO" character varying, "CHANNEL" character varying, "EVENTTYPE" character varying, "STARTDTE" date, "ENDDTE" date, "PAGE" integer, "PAGEPOSN" integer, "COMOFFERTYPE" character varying, "COMOFFERIC1" character varying, "COMCATMAN" character varying, "OFFERNO" integer, "OFFERNAME" character varying, "PARTNO" character varying, "DESC" character varying, "WEBPARTDESC" character varying, "BRAND" character varying, "IC4" character varying, "SKU" character varying, "SUBSKU" character varying, "FROMPRCIND" text, "COMOFFERHDRCOPY" text, "COMOFFERCOPY" character varying, "IMAGEREF" character varying, "COPYREF" character varying, "TRANSTASMAN" text, "FLNEW" text, "FLHOTPRICE" text, "FLBONUS" text, "FLEXCLUSIVE" text, "FLINTROPRICE" text, "FLLTDSTRSTK" text, "FLNOTAVAILALLSTR" text, "FLNOTAVAILONLINE" text, "FLONLINEONLY" text, "FLORDERYOURSTODAY" text, "FLPRICEDOWN" text, "FLRAINCHECK" text, "FLWAEXCL" text, "FLWARRANTY" text, "FLLIMITQTY" integer, "HYBTGTGRP" text, "FLLOWESTPRICE" text, "FLLMTTIMEONLY" text, "FLWHILESTOCKLAST" text, "FLSTORESTOCKONLY" text, "FLREWARDS" text, "FLCLEARANCE" text, "OFFERLINES" bigint, "OFFERQTY" integer, "FREEQTY" integer, "SAVEPCT" numeric, "TOTADVPRICEGST" numeric, "TOTALEDPRICEGST" numeric, "TOTSAVEPCT" numeric, "TOTSAVEVAL" numeric, "ADVPRICEGST" numeric, "EDPRICEGST" numeric, "CALCSAVEPCT" numeric, "CALCSAVEVAL" numeric, "inventoryReviewIndicator" text, "OTHER" character varying) 
@@ -147,6 +151,7 @@ AS $BODY$
                 e."eventType" = 'Retail Catalogue'
                 AND eo."pagePosition" = 0
             )
+            AND ((e."status" IN ('Open', 'Locked') AND eo."isOfferActive" = TRUE AND eod."isSkuActive" = TRUE) OR (e."status" IN ('Completed', 'Cancelled')))
       )
       SELECT
           bq."EVENTID",
@@ -225,6 +230,3 @@ AS $BODY$
       ORDER BY bq."PAGE", bq."PAGEPOSN", bq."OFFERNO";
   
 $BODY$;
-
-ALTER FUNCTION public."spMarketingExtract"(p_event_id integer)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

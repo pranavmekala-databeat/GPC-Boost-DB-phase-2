@@ -1,5 +1,10 @@
-CREATE OR REPLACE PROCEDURE public.sp_process_salesy1()
-LANGUAGE plpgsql
+-- PROCEDURE: public.sp_process_salesy1()
+
+-- DROP PROCEDURE IF EXISTS public.sp_process_salesy1();
+
+CREATE OR REPLACE PROCEDURE public.sp_process_salesy1(
+	)
+LANGUAGE 'plpgsql'
 AS $BODY$
     DECLARE
         v_row_count INTEGER;
@@ -17,6 +22,12 @@ AS $BODY$
         RAISE NOTICE 'Processing tSalesY1 at %', v_timestamp;
 
         BEGIN
+            -- Skip the entire process when the source temp table is empty (no action taken)
+            IF EXISTS (SELECT 1 FROM public."tSalesY1_temp") THEN
+
+            -- CHANGE: Truncate table instead of upsert
+            TRUNCATE TABLE public."tSalesY1";
+
             --------------------------------------------------------------------
             -- Step 1: Deduplicate temp data
             --------------------------------------------------------------------
@@ -74,6 +85,7 @@ AS $BODY$
                 FROM deduped d
                 LEFT JOIN public."tProducts" p
                     ON d.sku = p.sku AND d.country = p.country
+                AND p."isActive"=true
             ),
 
             --------------------------------------------------------------------
@@ -606,7 +618,7 @@ AS $BODY$
             )
 
             --------------------------------------------------------------------
-            -- Step 4: Upsert into main table
+            -- Step 4: Insert into main table (CHANGED from upsert)
             --------------------------------------------------------------------
             INSERT INTO public."tSalesY1" (
                 company, "salesType", sku, "costOfGoods", sales, margin,
@@ -629,51 +641,14 @@ AS $BODY$
                 "averageSales12Months", "averageSales9Months", "averageSales6Months", "averageSales3Months",
                 "storesSold", "salesHits12Months", "salesHits6Months", "averageMonthlySales", country,
                 (NOW() AT TIME ZONE 'Australia/Sydney') AS "createdAt", NULL AS "updatedAt"
-            FROM computed
-            ON CONFLICT (company, "salesType", sku, country)
-            DO UPDATE SET
-                "costOfGoods" = EXCLUDED."costOfGoods",
-                sales = EXCLUDED.sales,
-                margin = EXCLUDED.margin,
-                "salesQuantity12" = EXCLUDED."salesQuantity12",
-                "salesQuantity11" = EXCLUDED."salesQuantity11",
-                "salesQuantity10" = EXCLUDED."salesQuantity10",
-                "salesQuantity9" = EXCLUDED."salesQuantity9",
-                "salesQuantity8" = EXCLUDED."salesQuantity8",
-                "salesQuantity7" = EXCLUDED."salesQuantity7",
-                "salesQuantity6" = EXCLUDED."salesQuantity6",
-                "salesQuantity5" = EXCLUDED."salesQuantity5",
-                "salesQuantity4" = EXCLUDED."salesQuantity4",
-                "salesQuantity3" = EXCLUDED."salesQuantity3",
-                "salesQuantity2" = EXCLUDED."salesQuantity2",
-                "salesQuantity1" = EXCLUDED."salesQuantity1",
-                "salesQuantity0" = EXCLUDED."salesQuantity0",
-                "salesGroup1" = EXCLUDED."salesGroup1",
-                "salesGroup2" = EXCLUDED."salesGroup2",
-                "salesGroup3" = EXCLUDED."salesGroup3",
-                "salesGroup4" = EXCLUDED."salesGroup4",
-                "salesGroup5" = EXCLUDED."salesGroup5",
-                "salesGroup6" = EXCLUDED."salesGroup6",
-                "salesNSW" = EXCLUDED."salesNSW",
-                "salesVIC" = EXCLUDED."salesVIC",
-                "salesQLD" = EXCLUDED."salesQLD",
-                "salesSA" = EXCLUDED."salesSA",
-                "salesWA" = EXCLUDED."salesWA",
-                "salesNT" = EXCLUDED."salesNT",
-                "salesTAS" = EXCLUDED."salesTAS",
-                "averageSales12Months" = EXCLUDED."averageSales12Months",
-                "averageSales9Months" = EXCLUDED."averageSales9Months",
-                "averageSales6Months" = EXCLUDED."averageSales6Months",
-                "averageSales3Months" = EXCLUDED."averageSales3Months",
-                "storesSold" = EXCLUDED."storesSold",
-                "salesHits12Months" = EXCLUDED."salesHits12Months",
-                "salesHits6Months" = EXCLUDED."salesHits6Months",
-                "averageMonthlySales" = EXCLUDED."averageMonthlySales",
-                country = EXCLUDED.country,
-                "updatedAt" = (NOW() AT TIME ZONE 'Australia/Sydney');
+            FROM computed;
 
             GET DIAGNOSTICS v_row_count = ROW_COUNT;
-            RAISE NOTICE 'tSalesY1 upsert affected % rows', v_row_count;
+            RAISE NOTICE 'tSalesY1: % rows inserted', v_row_count;
+
+            ELSE
+                RAISE NOTICE 'tSalesY1_temp is empty - skipping (no action taken)';
+            END IF;
 
             -- Calculate duration and log successful completion
             v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
@@ -704,7 +679,4 @@ AS $BODY$
 
     END;
 
-  
 $BODY$;
-ALTER PROCEDURE public.sp_process_salesy1()
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

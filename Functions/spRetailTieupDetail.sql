@@ -1,3 +1,7 @@
+-- FUNCTION: public.spRetailTieupDetail(integer)
+
+-- DROP FUNCTION IF EXISTS public."spRetailTieupDetail"(integer);
+
 CREATE OR REPLACE FUNCTION public."spRetailTieupDetail"(
 	p_event_id integer)
     RETURNS TABLE("eventDescription" character varying, page integer, "pagePosition" integer, "comOfferCategory1" character varying, "offerNo" integer, "commercialOfferType" character varying, "offerId" integer, sku character varying, brand character varying, "partNo" character varying, description character varying, "tieUp" text, "everydayPriceGst" numeric, "advertisedPriceGst" numeric, "allocationGroup" character varying, "allocationType" character varying, "group0Quantity" integer, "group1Quantity" integer, "group2Quantity" integer, "group3Quantity" integer, "group4Quantity" integer, "group5Quantity" integer, "totalTieUp" numeric, "tieUpPercentForecast" numeric, "tieUpCost" numeric, "categoryForecast" numeric, "incrementalForecast" numeric, "incrementalForecastPercent" numeric, "purchaseQuantity" integer, "forecastCost" numeric, "forecastSales" numeric, ignition boolean, "COUNTRY" character varying) 
@@ -59,7 +63,6 @@ END AS "commercialOfferType",
  FROM public."tEvent" eh 
  INNER JOIN public."tEventOffer" eo 
  ON eh."eventId" = eo."eventId" 
-
  INNER JOIN public."tEventPage" ep 
  ON ep."eventId" = eo."eventId" 
  AND ep.page = eo.page 
@@ -76,8 +79,6 @@ WHERE eh."eventId" = p_event_id
                 eh."eventType" = 'Retail Catalogue'
                 AND eo."pagePosition" = 0
             )
+AND ((eh."status" IN ('Open', 'Locked') AND eo."isOfferActive" = TRUE AND eod."isSkuActive" = TRUE) OR (eh."status" IN ('Completed', 'Cancelled')))
 ORDER BY eo.page ASC, eo."pagePosition" ASC, eo."comOfferCategory1" ASC, eo."offerNumber" ASC, prod."partNo" ASC; END; 
 $BODY$;
-
-ALTER FUNCTION public."spRetailTieupDetail"(p_event_id integer)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

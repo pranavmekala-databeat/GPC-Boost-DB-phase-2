@@ -1,34 +1,41 @@
+-- PROCEDURE: public.sp_update_lecost_natavgcost(integer, integer)
+
+-- DROP PROCEDURE IF EXISTS public.sp_update_lecost_natavgcost(integer, integer);
+
 CREATE OR REPLACE PROCEDURE public.sp_update_lecost_natavgcost(
 	IN p_offerid integer,
 	IN p_offerno integer,
 	OUT p_lowestedprice numeric)
-LANGUAGE plpgsql
+LANGUAGE 'plpgsql'
 AS $BODY$
-DECLARE 
+DECLARE
     v_gst numeric;
     v_startdate date;
     v_enddate date;
     v_country text;
-	v_channel text;
-	v_eventChannel text;
+    v_channel text;
+    v_eventChannel text;
+    v_offerTypeId integer;
 BEGIN
-	  ------------------------------------------------------------------
-    SELECT 
-        eh."startDate", 
-        eh."endDate", 
+      ------------------------------------------------------------------
+    SELECT
+        eh."startDate",
+        eh."endDate",
         eh."country",
-		eh."channel"
-    INTO 
-        v_startdate, 
-        v_enddate, 
+        eh."channel",
+        eoh."OfferTypeId"
+    INTO
+        v_startdate,
+        v_enddate,
         v_country,
-		v_eventChannel
+        v_eventChannel,
+		v_offerTypeId
     FROM "tEventOffer" eoh
     JOIN "tEvent" eh ON eh."eventId" = eoh."eventId"
     WHERE eoh."offerId" = p_offerid
       AND eoh."offerNumber" = p_offerno
     LIMIT 1;
-
+ 
     ------------------------------------------------------------------
     -- 2) Get GST for that country + event date
     ------------------------------------------------------------------
@@ -41,17 +48,54 @@ BEGIN
       AND v_startdate <= COALESCE((c."configvalue"->>'EndDate')::date, '9999-12-31')
     ORDER BY (c."configvalue"->>'StartDate')::date DESC
     LIMIT 1;
-
-	SELECT (config."configvalue" ->> 'channel')
-	INTO v_channel
-	FROM "tConfig" config
-	WHERE config."configkey" = v_eventChannel
+ 
+    SELECT (config."configvalue" ->> 'channel')
+    INTO v_channel
+    FROM "tConfig" config
+    WHERE config."configkey" = v_eventChannel
    AND config."country" = v_country
    AND config."configtype" = 'SalesType';
     ----------------------------------------------------------------------
     -- STEP 1 → UPDATE COSTS IN tEventOfferDetail
     ----------------------------------------------------------------------
-    WITH data AS (
+    WITH "pricelistDetail" AS (
+        SELECT
+            pld."sku",
+            pld."priceList",
+            pld."priceListPrice",
+            pld."startDate",
+            pld."country",
+            ROW_NUMBER() OVER (
+                PARTITION BY pld."sku",pld."country",
+                CASE
+                    WHEN pld."priceList" = '050' THEN 'clearance'
+                    WHEN pld."priceList" IN ('390','419','824','343','446','241') THEN 'au_primary'
+                    WHEN pld."priceList" = '036' THEN 'au_fallback'
+                    WHEN pld."priceList" IN ('371','274','211','044','134','021') THEN 'nz_primary'
+                    WHEN pld."priceList" = '492' THEN 'nz_fallback'
+                END
+                ORDER BY pld."startDate" DESC
+            ) AS group_rn
+        FROM "tPriceListDetail" pld
+        INNER JOIN "tPriceList" pl ON pld."priceList" = pl."priceList"
+        WHERE pld."priceList" IN ('050','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
+          AND pld."isActive"
+    ),
+ 
+    "pivoted_prices" AS (
+        SELECT
+            "sku","country",
+            MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS clearance_price_050,
+            MAX(CASE WHEN "priceList" IN ('390','419','824','343','446','241') AND group_rn = 1 THEN "priceListPrice" END) AS au_primary_price,
+            MAX(CASE WHEN "priceList" = '036' AND group_rn = 1 THEN "priceListPrice" END) AS au_fallback_price_036,
+            MAX(CASE WHEN "priceList" IN ('371','274','211','044','134','021') AND group_rn = 1 THEN "priceListPrice" END) AS nz_primary_price,
+            MAX(CASE WHEN "priceList" = '492' AND group_rn = 1 THEN "priceListPrice" END) AS nz_fallback_price_492
+        FROM "pricelistDetail"
+        WHERE group_rn = 1
+        GROUP BY "sku","country"
+    ),
+ 
+    data AS (
         SELECT
             d."sku",
             d."offerNo",
@@ -60,42 +104,48 @@ BEGIN
             (COALESCE(s."averageMonthlySales", 0) / 30.0) *
             ((COALESCE(eoh."endDate", eh."endDate") -
               COALESCE(eoh."startDate", eh."startDate")) + 1) AS calc_units,
-
+ 
             v_channel AS "salesType",
             v_gst AS gst_value,
-
-            ppr."exchangeRatePrice",
-            ppr."priceControlPlan",
-            ppr."pricePoint2",
-
+ 
+            ppr."pricePoint6",
+ 
             p."vendorCostPerEach",
             p."nationalAvgCost",
-
+            p."isActive",
+            p."clearance",
+            eh."country",
             COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS sohStore,
-            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc
-
+            COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc,
+ 
+            pp.clearance_price_050,
+            pp.au_primary_price,
+            pp.au_fallback_price_036,
+            pp.nz_primary_price,
+            pp.nz_fallback_price_492
+ 
         FROM "tEventOfferDetail" d
         INNER JOIN "tEventOffer" eoh
             ON d."offerId" = eoh."offerId"
            AND d."offerNo" = eoh."offerNumber"
         INNER JOIN "tEvent" eh
             ON eh."eventId" = eoh."eventId"
-			INNER JOIN "tProducts" p
+            INNER JOIN "tProducts" p
             ON p."sku" = d."sku"
+            AND p."isActive" = TRUE
         INNER JOIN "tPriceProductRules" ppr
             ON ppr."sku" = d."sku"
             AND ppr."company" = eh."company"
-            and ppr."supplierId"=p."supplierId"
             and ppr."startDate"<=CURRENT_DATE and  ppr."endDate">=CURRENT_DATE
-
-        
-		LEFT JOIN "tSalesY1" s
+            and ppr."isActive" = TRUE
+        LEFT JOIN "pivoted_prices" pp ON pp."sku" = d."sku" and pp."country"=eh."country"
+        LEFT JOIN "tSalesY1" s
             ON s."sku" = d."sku"
            AND s."company" = eh."company"
            AND s."salesType" = v_channel
         LEFT JOIN "tInventory" inv
             ON inv."sku" = d."sku"
-			and inv."company" in (eh."company",'12','52')
+            and inv."company" in (eh."company",'12','52')
         WHERE d."offerId" = p_offerId
           AND d."offerNo" = p_offerNo
         GROUP BY
@@ -104,68 +154,87 @@ BEGIN
             eoh."endDate", eoh."startDate",
             eh."endDate", eh."startDate",
             v_channel, v_gst,
-            ppr."exchangeRatePrice", ppr."priceControlPlan",
-            ppr."pricePoint2",
-            p."vendorCostPerEach", p."nationalAvgCost"
+            ppr."pricePoint6",
+            p."vendorCostPerEach", p."nationalAvgCost",
+            p."isActive",
+            p."clearance",
+            eh."country",
+            pp.clearance_price_050,
+            pp.au_primary_price,
+            pp.au_fallback_price_036,
+            pp.nz_primary_price,
+            pp.nz_fallback_price_492
+    ),
+ 
+    "baseRrpCalculation" AS (
+        SELECT
+            d.*,
+            CASE
+                WHEN d."clearance" = 'Y' THEN
+                    Round(COALESCE(d.clearance_price_050,0),2)
+                    
+
+                WHEN d."clearance" <> 'Y' AND d."country" = 'AU' THEN
+                    CASE
+                        WHEN d.au_primary_price IS NOT NULL THEN
+                           Round(d.au_primary_price,2)   
+                        WHEN d.au_fallback_price_036 IS NOT NULL THEN
+                          Round(d.au_fallback_price_036,2)
+                        ELSE
+                            ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)
+                    END
+
+                WHEN d."clearance" <> 'Y' AND d."country" = 'NZ' THEN
+                    CASE
+                        WHEN d.nz_primary_price IS NOT NULL THEN
+                            ROUND(d.nz_primary_price, 2)
+                        WHEN d.nz_fallback_price_492 IS NOT NULL THEN
+                            ROUND(d.nz_fallback_price_492, 2)
+                        ELSE
+                        ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)  
+                    END
+            END AS base_rrp_price
+        FROM data d
     )
     UPDATE "tEventOfferDetail" e
     SET
         "everydayUnits" = ROUND(d.calc_units),
-
-        "everydayPrice" =
-            ROUND(COALESCE( CASE d."salesType"
-                WHEN 'CASH' THEN d."exchangeRatePrice"
-                WHEN 'P&C'  THEN d."priceControlPlan"
-                WHEN 'ACC'  THEN d."pricePoint2"
-                ELSE 0 END, 0) / (1 + COALESCE(d.gst_value, 0)),2),
-
-        "everydayPriceGst" = ROUND(COALESCE(
-            CASE d."salesType"
-                WHEN 'CASH' THEN d."exchangeRatePrice"
-                WHEN 'P&C'  THEN d."priceControlPlan"
-                WHEN 'ACC'  THEN d."pricePoint2"
-                ELSE 0 END, 0),2),
-
-        "everydayPriceGstSys" = ROUND(COALESCE(
-            CASE d."salesType"
-                WHEN 'CASH' THEN d."exchangeRatePrice"
-                WHEN 'P&C'  THEN d."priceControlPlan"
-                WHEN 'ACC'  THEN d."pricePoint2"
-                ELSE 0 END, 0),2),
-
-        "stockOnHandStore" = d.sohStore,
-        "stockOnHandDC"    = d.sohDc,
-		"gst" = d.gst_value,
-        "LatestEffectiveCost"      = ROUND(COALESCE(d."vendorCostPerEach", 0),2),
-        "nationalAverageCost"      = ROUND(COALESCE(d."nationalAvgCost", 0),2),
-        "categoryCost"             = ROUND(COALESCE(d."nationalAvgCost", 0),2),
-
-        "everydayExtendedUnitCost"  = ROUND(d.calc_units) * ROUND(COALESCE(d."nationalAvgCost", 0),2),
-        "everydayExtendedUnitSales" = ROUND(d.calc_units) * ROUND(COALESCE(
-                                              CASE d."salesType"
-                                                WHEN 'CASH' THEN d."exchangeRatePrice"
-                                                WHEN 'P&C'  THEN d."priceControlPlan"
-                                                WHEN 'ACC'  THEN d."pricePoint2"
-                                                ELSE 0 END, 0),2),
-
-        "extendedAdvertisedPrice" = ROUND(d.calc_units) * ROUND(COALESCE(e."advertisedPrice", 0),2),
-        "everydayCost" = ROUND(COALESCE(d."nationalAvgCost", 0),2),
-		"isCategoryForecastLocked" =
-									CASE 
-										WHEN e."isSkuEdited" IS FALSE OR e."isSkuEdited" IS NULL
-										THEN FALSE
-										ELSE e."isCategoryForecastLocked"
-									END
-    FROM data d
+ 
+        "everydayPrice" = ROUND(d.base_rrp_price / (1 + COALESCE(d.gst_value, 0)),2),
+ 
+        "everydayPriceGst" = ROUND(d.base_rrp_price,2),
+ 
+        "everydayPriceGstSys" = ROUND(d.base_rrp_price,2),
+ 
+        "stockOnHandStore" =  d.sohStore ,
+        "stockOnHandDC"    = d.sohDc ,
+        "gst" = d.gst_value ,
+        "LatestEffectiveCost"      = ROUND(COALESCE(d."vendorCostPerEach", 0),2) ,
+        "nationalAverageCost"      = ROUND(COALESCE(d."nationalAvgCost", 0),2) ,
+        "categoryCost"             = ROUND(COALESCE(d."nationalAvgCost", 0),2) ,
+ 
+        "everydayExtendedUnitCost"  = ROUND(d.calc_units) * ROUND(COALESCE(d."nationalAvgCost", 0),2) ,
+        "everydayExtendedUnitSales" = ROUND(d.calc_units) * ROUND(d.base_rrp_price,2) ,
+ 
+        "extendedAdvertisedPrice" = ROUND(d.calc_units) * ROUND(COALESCE(e."advertisedPrice", 0),2) ,
+        "everydayCost" = ROUND(COALESCE(d."nationalAvgCost", 0),2) ,
+        "isCategoryForecastLocked" =
+                                    CASE
+                                        WHEN e."isSkuEdited" IS FALSE OR e."isSkuEdited" IS NULL
+                                        THEN FALSE
+                                        ELSE e."isCategoryForecastLocked"
+                                    END
+    FROM "baseRrpCalculation" d
     WHERE e."sku" = d."sku"
       AND e."offerNo" = d."offerNo"
       AND e."offerId" = d."offerId";
-
+ 
     ----------------------------------------------------------------------
     -- STEP 2 → UPDATE IMAGE & COPY REFERENCES
     ----------------------------------------------------------------------
+    IF v_offerTypeId IN (1,3,4,5,13,17) THEN
     WITH latest_offer AS (
-        SELECT 
+        SELECT
             o."imageReference",
             o."copyReference"
         FROM "tEventOffer" o
@@ -179,7 +248,7 @@ BEGIN
            AND curr_offer."offerNumber" = p_offerNo
         INNER JOIN "tEvent" curr
             ON curr."eventId" = curr_offer."eventId"
-        WHERE 
+        WHERE
             h."eventId" <> curr."eventId"
             AND d."sku" IN (
                 SELECT "sku" FROM "tEventOfferDetail"
@@ -197,7 +266,7 @@ BEGIN
         LIMIT 1
     ),
     latest_offer_by_name AS (
-        SELECT 
+        SELECT
             o."imageReference",
             o."copyReference"
         FROM "tEventOffer" o
@@ -208,7 +277,7 @@ BEGIN
            AND curr_offer."offerNumber" = p_offerNo
         INNER JOIN "tEvent" curr
             ON curr."eventId" = curr_offer."eventId"
-        WHERE 
+        WHERE
             h."channel" = curr."channel"
             AND h."company" = curr."company"
             AND h."country" = curr."country"
@@ -223,23 +292,22 @@ BEGIN
         LIMIT 1
     )
     UPDATE "tEventOffer" o
-    SET 
+    SET
         "imageReference" = COALESCE(lo."imageReference", lon."imageReference"),
         "copyReference"  = COALESCE(lo."copyReference", lon."copyReference")
     FROM latest_offer lo
     FULL JOIN latest_offer_by_name lon ON TRUE
     WHERE o."offerId" = p_offerId
       AND o."offerNumber" = p_offerNo
-      AND o."OfferTypeId" IN 
+      AND o."OfferTypeId" IN
         (1,3,4,5,13,17);
-
-	 SELECT MIN(COALESCE("everydayPriceGst", 0))
+    END IF;
+ 
+     SELECT MIN(COALESCE("everydayPriceGst", 0))
     INTO p_lowestEdPrice
     FROM "tEventOfferDetail"
     WHERE "offerNo" = p_offerNo
       AND "offerId" = p_offerId;
-
+ 
 END;
 $BODY$;
-ALTER PROCEDURE public.sp_update_lecost_natavgcost(IN p_offerid integer, IN p_offerno integer, OUT p_lowestedprice numeric)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";

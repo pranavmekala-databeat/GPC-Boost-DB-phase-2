@@ -1,3 +1,7 @@
+-- FUNCTION: public.get_dataview(integer, integer, text[], text[], text[], text[], boolean, boolean, boolean, boolean, integer, integer)
+
+-- DROP FUNCTION IF EXISTS public.get_dataview(integer, integer, text[], text[], text[], text[], boolean, boolean, boolean, boolean, integer, integer);
+
 CREATE OR REPLACE FUNCTION public.get_dataview(
 	p_offer_id integer DEFAULT 1,
 	p_offer_no integer DEFAULT 1,
@@ -11,7 +15,7 @@ CREATE OR REPLACE FUNCTION public.get_dataview(
 	p_sort_catfcst_desc boolean DEFAULT NULL::boolean,
 	p_page_number integer DEFAULT 1,
 	p_page_size integer DEFAULT 100)
-    RETURNS TABLE(sku text, part_number text, brand text, description text, frompriceind boolean, displayind boolean, clearance text, showroom text, advpricegst numeric, edprice numeric, calcsavepercent numeric, calcsavevalue numeric, lecost numeric, natavgcost numeric, catfcst integer, incrfcst integer, fcstcost numeric, fcstsales numeric, fcsttmvalue numeric, fcsttmpercent numeric, edunits numeric, scansupportvalue numeric, scansupportpercent numeric, sohstore integer, sohdc integer, grp0qty integer, grp1qty integer, grp2qty integer, grp3qty integer, grp4qty integer, grp5qty integer, totaltieup integer, tieuppercentfcst numeric, tieupcost numeric, supplierid text, suppliername text, ic2 text, ic3 text, ic4 text, comofferic1 text, incrementaltmdollar numeric, incrementalsalesdollar numeric, edcost numeric, edunittmdollar numeric, advunittmdollar numeric, advsalesdollar numeric, edsalesdollar numeric, totalmultibuyprice numeric, requiredqty integer, advpriceexgst numeric, purchaseqty integer, freeqty integer, iscatfcstlocked boolean, total_count integer, isskuedited boolean) 
+    RETURNS TABLE(sku text, part_number text, brand text, description text, frompriceind boolean, displayind boolean, clearance text, showroom text, advpricegst numeric, edprice numeric, calcsavepercent numeric, calcsavevalue numeric, lecost numeric, natavgcost numeric, catfcst integer, incrfcst integer, fcstcost numeric, fcstsales numeric, fcsttmvalue numeric, fcsttmpercent numeric, edunits numeric, scansupportvalue numeric, scansupportpercent numeric, sohstore integer, sohdc integer, grp0qty integer, grp1qty integer, grp2qty integer, grp3qty integer, grp4qty integer, grp5qty integer, totaltieup integer, tieuppercentfcst numeric, tieupcost numeric, supplierid text, suppliername text, ic2 text, ic3 text, ic4 text, comofferic1 text, incrementaltmdollar numeric, incrementalsalesdollar numeric, edcost numeric, edunittmdollar numeric, advunittmdollar numeric, advsalesdollar numeric, edsalesdollar numeric, totalmultibuyprice numeric, requiredqty integer, advpriceexgst numeric, purchaseqty integer, freeqty integer, iscatfcstlocked boolean, total_count integer, isskuedited boolean, isskuactive boolean) 
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE PARALLEL UNSAFE
@@ -147,7 +151,8 @@ WITH filtered AS (
 		eo."spacePurchase",
 		e."purchaseQuantity",
 		e."isSkuEdited",
-        COUNT(*) OVER() AS total_count
+        COUNT(*) OVER() AS total_count,
+        e."isSkuActive"
     FROM "tEventOfferDetail" e
     JOIN "tEvent" ev
       ON e."eventId" = ev."eventId"
@@ -158,6 +163,7 @@ WITH filtered AS (
     JOIN "tEventOffer" eo
       ON e."offerId" = eo."offerId"
      AND e."offerNo" = eo."offerNumber"
+     
     WHERE e."offerId" = ' || p_offer_id || '
       AND e."offerNo" = ' || p_offer_no || ' 
 ' || CASE
@@ -281,7 +287,8 @@ ROUND(
 
     f."isCategoryForecastLocked"              AS iscatfcstlocked,
     f.total_count::int                       AS total_count,
-	f."isSkuEdited" 					     AS isskuedited
+	f."isSkuEdited" 					     AS isskuedited,
+    f."isSkuActive"                          AS isskuactive
 FROM filtered f
 ' ||CASE WHEN TRIM(v_order) <> '' THEN v_order ELSE 'ORDER BY f.sku' END || ' 
 OFFSET ' || v_offset || '
@@ -294,6 +301,3 @@ LIMIT ' || p_page_size || ';
 
 END;
 $BODY$;
-
-ALTER FUNCTION public.get_dataview(p_offer_id integer, p_offer_no integer, p_skus text[], p_part_numbers text[], p_brands text[], p_part_descriptions text[], p_sort_advpricegst_desc boolean, p_sort_edpricegst_desc boolean, p_sort_edunits_desc boolean, p_sort_catfcst_desc boolean, p_page_number integer, p_page_size integer)
-    OWNER TO "gap-az-sec-psql-aes-gap-pps-aa-boost-01-dba";
