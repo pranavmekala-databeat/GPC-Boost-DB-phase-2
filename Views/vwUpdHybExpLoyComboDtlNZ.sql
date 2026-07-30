@@ -68,10 +68,10 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpLoyComboDtlNZ"
             exploded_rn."PROMOTION_CODE",
             exploded_rn."GROUP",
             exploded_rn."SALE_KEYWORDS",
-            floor(((exploded_rn.rn - 1) / 3000)::double precision)::integer AS chunk_index,
+            floor(((exploded_rn.rn - 1) / 2000)::double precision)::integer AS chunk_index,
             string_agg(exploded_rn.sku_single, ','::text ORDER BY exploded_rn.sku_single) AS "PRODUCTS"
            FROM exploded_rn
-          GROUP BY exploded_rn."eventId", exploded_rn.page, exploded_rn."pagePosition", exploded_rn."offerId", exploded_rn."offerNumber", exploded_rn."offerTypeId", exploded_rn."PROMOTION_CODE", exploded_rn."GROUP", exploded_rn."SALE_KEYWORDS", (floor(((exploded_rn.rn - 1) / 3000)::double precision))
+          GROUP BY exploded_rn."eventId", exploded_rn.page, exploded_rn."pagePosition", exploded_rn."offerId", exploded_rn."offerNumber", exploded_rn."offerTypeId", exploded_rn."PROMOTION_CODE", exploded_rn."GROUP", exploded_rn."SALE_KEYWORDS", (floor(((exploded_rn.rn - 1) / 2000)::double precision))
         )
  SELECT
         CASE

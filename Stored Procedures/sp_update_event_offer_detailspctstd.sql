@@ -22,48 +22,121 @@ BEGIN
     VALUES (v_job_name, 'STARTED', v_start_time)
     RETURNING id INTO v_log_id;
 
+    -- ------------------------------------------------------------------
+    -- PERF: materialise the price-list waterfall ONCE for this run.
+    -- Previously every UPDATE recomputed pricelistDetail/pivoted_prices,
+    -- each a full window-sort over tPriceListDetail. Build it a single
+    -- time here, scoped to SKUs used by OPEN/LOCKED events, then index it.
+    -- ------------------------------------------------------------------
+    DROP TABLE IF EXISTS tmp_pivoted_prices_pctstd;
+    CREATE TEMP TABLE tmp_pivoted_prices_pctstd AS
+    WITH "relevantSkus" AS (
+        SELECT DISTINCT eod."sku"
+        FROM "tEventOfferDetail" eod
+        INNER JOIN "tEventOffer" eoh
+            ON eod."offerId" = eoh."offerId"
+           AND eod."offerNo" = eoh."offerNumber"
+        INNER JOIN "tEvent" eh
+            ON eh."eventId" = eoh."eventId"
+        WHERE eh."status" IN ('Open', 'Locked')
+          AND eoh."OfferTypeId" IN (14, 6)
+          AND eod."isSkuActive" = TRUE
+    ),
+    "pricelistDetail" AS (
+        SELECT
+            pld."sku",
+            pld."priceList",
+            pld."priceListPrice",
+            pld."country",
+            pld."company",
+            ROW_NUMBER() OVER (
+                PARTITION BY pld."sku", pld."country", pld."company",
+                CASE
+                    WHEN pld."priceList" = '050' THEN 'clearance'
+                    WHEN pld."priceList" = '184' THEN 'special_184'
+                    WHEN pld."priceList" = '499' THEN 'nz_clearance_499'
+                    WHEN pld."priceList" = '498' THEN 'nz_special_498'
+                    WHEN pld."priceList" IN ('390','419','824','343','446','241') THEN 'au_primary'
+                    WHEN pld."priceList" = '036' THEN 'au_fallback'
+                    WHEN pld."priceList" IN ('371','274','211','044','134','021') THEN 'nz_primary'
+                    WHEN pld."priceList" = '492' THEN 'nz_fallback'
+                END
+                ORDER BY pld."startDate" DESC
+            ) AS group_rn
+        FROM "tPriceListDetail" pld
+        INNER JOIN "tPriceList" pl ON pld."priceList" = pl."priceList"
+        WHERE pld."priceList" IN ('050','184','499','498','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
+          AND pld."isActive"
+          AND pld."sku" IN (SELECT "sku" FROM "relevantSkus")
+    )
+    SELECT
+        t.*,
+        CASE WHEN t."country" = 'AU' THEN LEAST(t.clearance_price_050, t.priceList184)
+             WHEN t."country" = 'NZ' THEN LEAST(t.priceList499, t.priceList498) END AS special_price,
+        t.au_primary_price AS au_primary,
+        t.au_fallback_price_036 AS au_fallback_036,
+        t.nz_primary_price AS nz_primary,
+        t.nz_fallback_price_492 AS nz_fallback_492
+    FROM (
+        SELECT
+            "sku","country","company",
+            MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS clearance_price_050,
+            MAX(CASE WHEN "priceList" = '184' AND group_rn = 1 THEN "priceListPrice" END) AS priceList184,
+            MAX(CASE WHEN "priceList" = '499' AND group_rn = 1 THEN "priceListPrice" END) AS priceList499,
+            MAX(CASE WHEN "priceList" = '498' AND group_rn = 1 THEN "priceListPrice" END) AS priceList498,
+            MAX(CASE WHEN "priceList" IN ('390','419','824','343','446','241') AND group_rn = 1 THEN "priceListPrice" END) AS au_primary_price,
+            MAX(CASE WHEN "priceList" = '036' AND group_rn = 1 THEN "priceListPrice" END) AS au_fallback_price_036,
+            MAX(CASE WHEN "priceList" IN ('371','274','211','044','134','021') AND group_rn = 1 THEN "priceListPrice" END) AS nz_primary_price,
+            MAX(CASE WHEN "priceList" = '492' AND group_rn = 1 THEN "priceListPrice" END) AS nz_fallback_price_492
+        FROM "pricelistDetail"
+        WHERE group_rn = 1
+        GROUP BY "sku","country","company"
+    ) t;
+
+    CREATE INDEX ON tmp_pivoted_prices_pctstd ("sku","country","company");
+    ANALYZE tmp_pivoted_prices_pctstd;
+    RAISE NOTICE '[%] tmp_pivoted_prices_pctstd built', clock_timestamp();
+
+    -- ------------------------------------------------------------------
+    -- PERF: pre-aggregate tInventory by (sku, company) ONCE.
+    -- ------------------------------------------------------------------
+    DROP TABLE IF EXISTS tmp_inventory_soh_pctstd;
+    CREATE TEMP TABLE tmp_inventory_soh_pctstd AS
+    WITH "relevantSkuCompanies" AS (
+        SELECT DISTINCT eod."sku", eh."company"
+        FROM "tEventOfferDetail" eod
+        INNER JOIN "tEventOffer" eoh
+            ON eod."offerId" = eoh."offerId"
+           AND eod."offerNo" = eoh."offerNumber"
+        INNER JOIN "tEvent" eh
+            ON eh."eventId" = eoh."eventId"
+        WHERE eh."status" IN ('Open', 'Locked')
+          AND eoh."OfferTypeId" IN (14, 6)
+          AND eod."isSkuActive" = TRUE
+    )
+    SELECT
+        rc."sku",
+        rc."company",
+        COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS "sohStore",
+        COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS "sohDc"
+    FROM "relevantSkuCompanies" rc
+    LEFT JOIN "tInventory" inv
+        ON inv."sku" = rc."sku"
+       AND inv."company" IN (rc."company", '12', '52')
+    GROUP BY rc."sku", rc."company";
+
+    CREATE INDEX ON tmp_inventory_soh_pctstd ("sku", "company");
+    ANALYZE tmp_inventory_soh_pctstd;
+    RAISE NOTICE '[%] tmp_inventory_soh_pctstd built - starting detail updates', clock_timestamp();
+
+
 -- ===================================================================================================
 -- UPDATE tEventOfferDetail For STD Range Price
 --===============================================================================================================
 
 --STDRangePrice
-WITH "pricelistDetail" AS (
-      SELECT
-          pld."sku",
-          pld."priceList",
-          pld."priceListPrice",
-          pld."startDate",
-          pld."country",
-          -- Separate ranking for each logical group
-          ROW_NUMBER() OVER (
-              PARTITION BY pld."sku",pld."country",
-              CASE
-                  WHEN pld."priceList" = '050' THEN 'clearance'
-                  WHEN pld."priceList" IN ('390','419','824','343','446','241') THEN 'au_primary'
-                  WHEN pld."priceList" = '036' THEN 'au_fallback'
-                  WHEN pld."priceList" IN ('371','274','211','044','134','021') THEN 'nz_primary'
-                  WHEN pld."priceList" = '492' THEN 'nz_fallback'
-              END
-              ORDER BY pld."startDate" DESC
-          ) AS group_rn
-      FROM "tPriceListDetail" pld
-      INNER JOIN "tPriceList" pl ON pld."priceList" = pl."priceList"
-      WHERE pld."priceList" IN ('050','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
-        AND pld."isActive"
-  ),
-
-  "pivoted_prices" AS (
-      SELECT
-          "sku","country",
-          MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS clearance_price_050,
-          MAX(CASE WHEN "priceList" IN ('390','419','824','343','446','241') AND group_rn = 1 THEN "priceListPrice" END) AS au_primary_price,
-          MAX(CASE WHEN "priceList" = '036' AND group_rn = 1 THEN "priceListPrice" END) AS au_fallback_price_036,
-          MAX(CASE WHEN "priceList" IN ('371','274','211','044','134','021') AND group_rn = 1 THEN "priceListPrice" END) AS nz_primary_price,
-          MAX(CASE WHEN "priceList" = '492' AND group_rn = 1 THEN "priceListPrice" END) AS nz_fallback_price_492
-      FROM "pricelistDetail"
-      WHERE group_rn = 1
-      GROUP BY "sku","country"
-  ),
+RAISE NOTICE '[%] START UPDATE tEventOfferDetail | offerType=STD Range Price | offerTypeId=14', clock_timestamp();
+WITH
 
   updateEventOfferDtlForSTDRangePrice AS (
       SELECT
@@ -79,6 +152,7 @@ WITH "pricelistDetail" AS (
           config."configvalue"->>'channel' AS "salesType",
           eod."gst" AS gst_value,
           ppr."pricePoint6",
+          ppr."pricePoint6IncludingGst",
           p."vendorBaseCost",
           p."nationalAvgCost",
           eoh."spacePurchase",
@@ -88,14 +162,20 @@ WITH "pricelistDetail" AS (
           eod."categoryforecast",
           eod."isCategoryForecastLocked",
           eh."country",
-          COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS sohStore,
-          COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc,
+          COALESCE(inv."sohStore", 0) AS sohStore,
+          COALESCE(inv."sohDc", 0) AS sohDc,
 
           pp.clearance_price_050,
+          pp.priceList184,
           pp.au_primary_price,
           pp.au_fallback_price_036,
           pp.nz_primary_price,
-          pp.nz_fallback_price_492
+          pp.nz_fallback_price_492,
+          pp.special_price,
+          pp.au_primary,
+          pp.au_fallback_036,
+          pp.nz_primary,
+          pp.nz_fallback_492
 
       FROM "tEventOfferDetail" eod
       INNER JOIN "tEventOffer" eoh ON eod."offerId" = eoh."offerId" AND eod."offerNo" = eoh."offerNumber"
@@ -106,47 +186,55 @@ WITH "pricelistDetail" AS (
           AND ppr."startDate" <= CURRENT_DATE AND ppr."endDate" >= CURRENT_DATE
           AND ppr."isActive" = TRUE
       INNER JOIN "tConfig" config ON config."configkey" = eh."channel" AND config."country" = eh."country" AND config."configtype" = 'SalesType'
-      LEFT JOIN "pivoted_prices" pp ON pp."sku" = eod."sku" AND pp."country" = eh."country"
-      LEFT JOIN "tInventory" inv ON inv."sku" = eod."sku" AND inv."company" IN (eh."company", '12', '52')
+      LEFT JOIN tmp_pivoted_prices_pctstd pp ON pp."sku" = eod."sku" AND pp."country" = eh."country" AND pp."company" = eh."company"
+      LEFT JOIN tmp_inventory_soh_pctstd inv ON inv."sku" = eod."sku" AND inv."company" = eh."company"
       LEFT JOIN "tSalesY1" s ON s."sku" = eod."sku" AND s."company" = eh."company" AND s."salesType" = config."configvalue" ->> 'channel'
       LEFT JOIN "tRegionalAreaGroupAllocation" rag ON rag."allocationGroup" = 'DEFAULT' AND rag."country" = eh."country"
-      WHERE eoh."OfferTypeId" IN (14) AND UPPER(eh."status") <> 'COMPLETED'
-      GROUP BY
-          eod."sku", eod."offerNo", eod."offerId", eoh."offerType", eoh."offerId", eoh."endDate", eoh."startDate", eh."endDate", eh."startDate",
-          config."configvalue", ppr."pricePoint6", p."vendorBaseCost", p."nationalAvgCost", p."clearance", eoh."incrementalPercentage",
-          rag."G0", rag."G1", rag."G2", rag."G3", rag."G4", rag."G5", eoh."spacePurchase", eoh."advertisedPriceGst", s."averageMonthlySales",
-          eod."everydayUnits", eod."categoryforecast", eoh."OfferTypeId", eod."isCategoryForecastLocked", eod."gst", eh."country",
-          pp.clearance_price_050, pp.au_primary_price, pp.au_fallback_price_036, pp.nz_primary_price, pp.nz_fallback_price_492
+      WHERE eoh."OfferTypeId" IN (14) AND eh."status" IN ('Open', 'Locked')
   ),
 
   "baseRrpCalculation" AS (
       SELECT
-            d.*,
-            CASE
-                WHEN d."clearance" = 'Y' THEN
-                    Round(COALESCE(d.clearance_price_050,0),2)
-                    
-
-                WHEN d."clearance" <> 'Y' AND d."country" = 'AU' THEN
-                    CASE
-                        WHEN d.au_primary_price IS NOT NULL THEN
-                           Round(d.au_primary_price,2)   
-                        WHEN d.au_fallback_price_036 IS NOT NULL THEN
-                          Round(d.au_fallback_price_036,2)
-                        ELSE
-                            ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)
-                    END
-
-                WHEN d."clearance" <> 'Y' AND d."country" = 'NZ' THEN
-                    CASE
-                        WHEN d.nz_primary_price IS NOT NULL THEN
-                            ROUND(d.nz_primary_price, 2)
-                        WHEN d.nz_fallback_price_492 IS NOT NULL THEN
-                            ROUND(d.nz_fallback_price_492, 2)
-                        ELSE
-                        ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)  
-                    END
-            END AS base_rrp_price
+          d.*,
+          CASE
+              -- AC5: Clearance matches exclusively list 050 (inclusive of GST per AC6)
+              WHEN d."country" = 'AU' THEN
+                  COALESCE(
+                      d.special_price,
+                      d.au_primary,
+                      d.au_fallback_036,
+                      ROUND(
+                          CASE
+                              WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 1 THEN
+                                  CEILING((ROUND(d."pricePoint6IncludingGst", 2)) * 10) / 10.0
+                              WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 10 THEN
+                                  CASE WHEN ((ROUND(d."pricePoint6IncludingGst", 2)) - FLOOR(ROUND(d."pricePoint6IncludingGst", 2))) > 0.5
+                                       THEN CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                                       ELSE FLOOR(ROUND(d."pricePoint6IncludingGst", 2))
+                                  END
+                              ELSE CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                          END, 2
+                      )
+                  )
+              WHEN d."country" = 'NZ' THEN
+                  COALESCE(
+                      d.special_price,
+                      d.nz_primary,
+                      d.nz_fallback_492,
+                      ROUND(
+                          CASE
+                              WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 1 THEN
+                                  CEILING((ROUND(d."pricePoint6IncludingGst", 2)) * 10) / 10.0
+                              WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 10 THEN
+                                  CASE WHEN ((ROUND(d."pricePoint6IncludingGst", 2)) - FLOOR(ROUND(d."pricePoint6IncludingGst", 2))) > 0.5
+                                       THEN CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                                       ELSE FLOOR(ROUND(d."pricePoint6IncludingGst", 2))
+                                  END
+                              ELSE CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                          END, 2
+                      )
+                  )
+              END AS base_rrp_price
       FROM updateEventOfferDtlForSTDRangePrice d
   ),
 
@@ -227,6 +315,7 @@ END,
       AND e."offerNo" = c."offerNo"
       AND e."offerId" = c."offerId"
       AND c."OfferTypeId" IN (14);
+    RAISE NOTICE '[%] END   UPDATE tEventOfferDetail | offerType=STD Range Price | offerTypeId=14', clock_timestamp();
 
 -- ===================================================================================================
 -- UPDATE tEventOfferDetail For PCT OFF RANGE
@@ -234,43 +323,8 @@ END,
 
 --updateEventOfferDtlForPCTOffRange
 
-WITH "pricelistDetail" AS (
-      SELECT
-          pld."sku",
-          pld."priceList",
-          pld."priceListPrice",
-          pld."startDate",
-          pld."country",
-          -- Separate ranking for each logical group
-          ROW_NUMBER() OVER (
-              PARTITION BY pld."sku",pld."country",
-              CASE
-                  WHEN pld."priceList" = '050' THEN 'clearance'
-                  WHEN pld."priceList" IN ('390','419','824','343','446','241') THEN 'au_primary'
-                  WHEN pld."priceList" = '036' THEN 'au_fallback'
-                  WHEN pld."priceList" IN ('371','274','211','044','134','021') THEN 'nz_primary'
-                  WHEN pld."priceList" = '492' THEN 'nz_fallback'
-              END
-              ORDER BY pld."startDate" DESC
-          ) AS group_rn
-      FROM "tPriceListDetail" pld
-      INNER JOIN "tPriceList" pl ON pld."priceList" = pl."priceList"
-      WHERE  pld."priceList" IN ('050','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
-        AND pld."isActive"
-  ),
-
-  "pivoted_prices" AS (
-      SELECT
-          "sku","country",
-          MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS clearance_price_050,
-          MAX(CASE WHEN "priceList" IN ('390','419','824','343','446','241') AND group_rn = 1 THEN "priceListPrice" END) AS au_primary_price,
-          MAX(CASE WHEN "priceList" = '036' AND group_rn = 1 THEN "priceListPrice" END) AS au_fallback_price_036,
-          MAX(CASE WHEN "priceList" IN ('371','274','211','044','134','021') AND group_rn = 1 THEN "priceListPrice" END) AS nz_primary_price,
-          MAX(CASE WHEN "priceList" = '492' AND group_rn = 1 THEN "priceListPrice" END) AS nz_fallback_price_492
-      FROM "pricelistDetail"
-      WHERE group_rn = 1
-      GROUP BY "sku","country"
-  ),
+RAISE NOTICE '[%] START UPDATE tEventOfferDetail | offerType=PCT Off Range | offerTypeId=6', clock_timestamp();
+WITH
 
   updateEventOfferDtlForPCTOffRange AS (
       SELECT
@@ -292,6 +346,7 @@ WITH "pricelistDetail" AS (
           config."configvalue"->>'channel' AS "salesType",
           eod."gst" AS gst_value,
           ppr."pricePoint6",
+          ppr."pricePoint6IncludingGst",
           p."vendorBaseCost",
           p."nationalAvgCost",
           eoh."incrementalPercentage",
@@ -300,13 +355,19 @@ WITH "pricelistDetail" AS (
           eoh."spacePurchase",
           eod."isCategoryForecastLocked",
           eh."country",
-          COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS sohStore,
-          COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc,
+          COALESCE(inv."sohStore", 0) AS sohStore,
+          COALESCE(inv."sohDc", 0) AS sohDc,
           pp.clearance_price_050,
+          pp.priceList184,
           pp.au_primary_price,
           pp.au_fallback_price_036,
           pp.nz_primary_price,
-          pp.nz_fallback_price_492
+          pp.nz_fallback_price_492,
+          pp.special_price,
+          pp.au_primary,
+          pp.au_fallback_036,
+          pp.nz_primary,
+          pp.nz_fallback_492
 
       FROM "tEventOfferDetail" eod
       INNER JOIN "tEventOffer" eoh
@@ -326,10 +387,10 @@ WITH "pricelistDetail" AS (
           ON config."configkey" = eh."channel"
          AND config."country" = eh."country"
          AND config."configtype" = 'SalesType'
-      LEFT JOIN "pivoted_prices" pp ON pp."sku" = eod."sku" AND pp."country" = eh."country"
-      LEFT JOIN "tInventory" inv
+      LEFT JOIN tmp_pivoted_prices_pctstd pp ON pp."sku" = eod."sku" AND pp."country" = eh."country" AND pp."company" = eh."company"
+      LEFT JOIN tmp_inventory_soh_pctstd inv
           ON inv."sku" = eod."sku"
-          AND inv."company" IN (eh."company",'12','52')
+          AND inv."company" = eh."company"
        LEFT JOIN "tSalesY1" s
           ON s."sku" = eod."sku"
          AND s."company" = eh."company"
@@ -338,62 +399,51 @@ WITH "pricelistDetail" AS (
            on rag."allocationGroup"='DEFAULT'
            AND rag."country" = eh."country"
       WHERE eoh."OfferTypeId" IN (6)
-      AND UPPER(eh."status") <> 'COMPLETED'
-      GROUP BY
-          eod."sku", eod."offerNo", eod."offerId",eoh."offerType",
-          eoh."offerId",  eoh."endDate", eoh."startDate", eh."endDate", eh."startDate",
-          config."configvalue", ppr."pricePoint6",
-          p."vendorBaseCost", p."nationalAvgCost", p."clearance",
-          eoh."incrementalPercentage", rag."G0",
-          rag."G1",
-          rag."G2",
-          rag."G3",
-          rag."G4",
-           rag."G5",
-           eoh."spacePurchase",
-           eoh."savePercent",
-           eod."everydayUnits",
-           s."averageMonthlySales",
-           eod."categoryforecast",
-           eoh."OfferTypeId",
-           eod."isCategoryForecastLocked",
-           eod."gst",
-           eh."country",
-           pp.clearance_price_050,
-        pp.au_primary_price,
-        pp.au_fallback_price_036,
-        pp.nz_primary_price,
-        pp.nz_fallback_price_492
+      AND eh."status" IN ('Open', 'Locked')
   ),
 
   "baseRrpCalculation" AS (
       SELECT
-            d.*,
-            CASE
-                WHEN d."clearance" = 'Y' THEN
-                    Round(COALESCE(d.clearance_price_050,0),2)
-                    
-
-                WHEN d."clearance" <> 'Y' AND d."country" = 'AU' THEN
-                    CASE
-                        WHEN d.au_primary_price IS NOT NULL THEN
-                           Round(d.au_primary_price,2)   
-                        WHEN d.au_fallback_price_036 IS NOT NULL THEN
-                          Round(d.au_fallback_price_036,2)
-                        ELSE
-                            ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)
-                    END
-
-                WHEN d."clearance" <> 'Y' AND d."country" = 'NZ' THEN
-                    CASE
-                        WHEN d.nz_primary_price IS NOT NULL THEN
-                            ROUND(d.nz_primary_price, 2)
-                        WHEN d.nz_fallback_price_492 IS NOT NULL THEN
-                            ROUND(d.nz_fallback_price_492, 2)
-                        ELSE
-                        ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)  
-                    END
-            END AS base_rrp_price
+          d.*,
+          CASE
+              -- AC5: Clearance matches exclusively list 050 (inclusive of GST per AC6)
+              WHEN d."country" = 'AU' THEN
+                  COALESCE(
+                      d.special_price,
+                      d.au_primary,
+                      d.au_fallback_036,
+                      ROUND(
+                          CASE
+                              WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 1 THEN
+                                  CEILING((ROUND(d."pricePoint6IncludingGst", 2)) * 10) / 10.0
+                              WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 10 THEN
+                                  CASE WHEN ((ROUND(d."pricePoint6IncludingGst", 2)) - FLOOR(ROUND(d."pricePoint6IncludingGst", 2))) > 0.5
+                                       THEN CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                                       ELSE FLOOR(ROUND(d."pricePoint6IncludingGst", 2))
+                                  END
+                              ELSE CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                          END, 2
+                      )
+                  )
+              WHEN d."country" = 'NZ' THEN
+                  COALESCE(
+                      d.special_price,
+                      d.nz_primary,
+                      d.nz_fallback_492,
+                      ROUND(
+                          CASE
+                              WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 1 THEN
+                                  CEILING((ROUND(d."pricePoint6IncludingGst", 2)) * 10) / 10.0
+                              WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 10 THEN
+                                  CASE WHEN ((ROUND(d."pricePoint6IncludingGst", 2)) - FLOOR(ROUND(d."pricePoint6IncludingGst", 2))) > 0.5
+                                       THEN CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                                       ELSE FLOOR(ROUND(d."pricePoint6IncludingGst", 2))
+                                  END
+                              ELSE CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                          END, 2
+                      )
+                  )
+              END AS base_rrp_price
       FROM updateEventOfferDtlForPCTOffRange d
   ),
 
@@ -476,11 +526,13 @@ END,
       AND e."offerNo" = c."offerNo"
       AND e."offerId" = c."offerId"
       AND c."OfferTypeId" IN (6);
+    RAISE NOTICE '[%] END   UPDATE tEventOfferDetail | offerType=PCT Off Range | offerTypeId=6', clock_timestamp();
 
 --===============================================================================================================
 -- UPDATE tEventOffer FOR STD RANGE PRICE
 --===============================================================================================================
 
+RAISE NOTICE '[%] START UPDATE tEventOffer | offerType=STD Range Price | offerTypeId=14', clock_timestamp();
 WITH EventOfferDtlSummaryForStdRangePrice AS (
     SELECT
         d."offerId",
@@ -542,7 +594,9 @@ FROM EventOfferDtlSummaryForStdRangePrice s
 WHERE o."offerId" = s."offerId"
   AND o."eventId" = s."eventId"
   AND o."offerNumber" = s."offerNo";
+RAISE NOTICE '[%] END   UPDATE tEventOffer | offerType=STD Range Price | offerTypeId=14', clock_timestamp();
 
+  RAISE NOTICE '[%] START UPDATE tEventOffer | offerType=STD Range Price | offerTypeId=14', clock_timestamp();
   WITH EventOfferDtlSummaryforAdvPriceForStdRangePrice AS (
     SELECT
         d."offerId",
@@ -580,12 +634,14 @@ SET
 WHERE o."offerId" = s."offerId"
   AND o."eventId" = s."eventId"
   AND o."offerNumber" = s."offerNo";
+RAISE NOTICE '[%] END   UPDATE tEventOffer | offerType=STD Range Price | offerTypeId=14', clock_timestamp();
 
 --===============================================================================================================
 -- UPDATE tEventOffer For PCT OFF RANGE
 --===============================================================================================================
 
 -- EventOfferDtlSummaryForPCTOffRange
+  RAISE NOTICE '[%] START UPDATE tEventOffer | offerType=PCT Off Range | offerTypeId=6', clock_timestamp();
   WITH EventOfferDtlSummaryforAdvPriceForPCTOffRange  AS (
          SELECT
         d."offerId",
@@ -623,7 +679,9 @@ SET
 FROM EventOfferDtlSummaryforAdvPriceForPCTOffRange s
 WHERE o."offerId" = s."offerId"
   AND o."offerNumber" = s."offerNo";
+RAISE NOTICE '[%] END   UPDATE tEventOffer | offerType=PCT Off Range | offerTypeId=6', clock_timestamp();
 
+   RAISE NOTICE '[%] START UPDATE tEventOffer | offerType=PCT Off Range | offerTypeId=6', clock_timestamp();
    WITH EventOfferDtlSummaryForPCTOffRange  AS (
          SELECT
         d."offerId",
@@ -686,11 +744,13 @@ SET
 FROM EventOfferDtlSummaryForPCTOffRange s
 WHERE o."offerId" = s."offerId"
   AND o."offerNumber" = s."offerNo";
+RAISE NOTICE '[%] END   UPDATE tEventOffer | offerType=PCT Off Range | offerTypeId=6', clock_timestamp();
 
 --===============================================================================================================
 -- UPDATE tMudMapDetail For STD Range Price and PCT OFF RANGE
 --===============================================================================================================
 
+RAISE NOTICE '[%] START UPDATE tMudMapDetail | offerType=STD Range Price & PCT Off Range (Regular Offers) | offerTypeId=NOT IN (4,15,3,5)', clock_timestamp();
 WITH EventOfferDetailAgg AS (
       SELECT
           "eventId",
@@ -707,7 +767,7 @@ RegularOffers AS (
         e."offerName",
         e."offerType",
         e."OfferTypeId",
-        UPPER(ev."status"),
+        ev."status",
          CASE
               WHEN e."fromPrice" = true
               THEN ROUND(eod."minFromPrice",2)
@@ -761,9 +821,9 @@ RegularOffers AS (
     WHERE e."OfferTypeId" NOT IN (4,15)
       AND e."OfferTypeId" <> 3
       AND e."OfferTypeId" <> 5
-      AND UPPER(ev."status") <> 'COMPLETED'
+      AND ev."status" IN ('Open', 'Locked')
     GROUP BY
-        e."eventId", e."offerId", e."offerName", e."offerType", e."OfferTypeId",UPPER(ev."status"),
+        e."eventId", e."offerId", e."offerName", e."offerType", e."OfferTypeId",ev."status",
         e."country", e."requiredQuantity", e."fromPrice", e."offerQuantity", e."freeQuantity", eod."minFromPrice"
 )
 UPDATE public."tMudMapDetail" AS m
@@ -788,6 +848,7 @@ FROM RegularOffers AS r
 WHERE m."eventId" = r."eventId"
   AND m."eventOfferId" = r."offerId"
 ;
+RAISE NOTICE '[%] END   UPDATE tMudMapDetail | offerType=STD Range Price & PCT Off Range (Regular Offers) | offerTypeId=NOT IN (4,15,3,5)', clock_timestamp();
 
   RAISE NOTICE 'Event offer details updated successfully for all SKUs.';
 

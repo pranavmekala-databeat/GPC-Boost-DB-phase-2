@@ -280,11 +280,11 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscNZ"
             m."CURRENCY",
             m."SHOW_PRICE_STRIKE_THROUGH",
             m."SALE_KEYWORDS",
-            floor(((er.rn - 1) / 3000)::double precision)::integer AS chunk_index,
+            floor(((er.rn - 1) / 2000)::double precision)::integer AS chunk_index,
             string_agg(er.sku_single, ','::text ORDER BY er.sku_single) AS "PRODUCTS"
            FROM exploded_rn er
              JOIN promo_meta m ON m.event_id = er.event_id AND m.page = er.page AND m."pagePosition" = er."pagePosition" AND m."offerId" = er."offerId" AND m.offer_type_id = er.offer_type_id AND m."PROMOTION_CODE" = er."PROMOTION_CODE"
-          GROUP BY m.event_id, m.page, m."pagePosition", m."offerId", m.offer_type_id, m."PROMOTION_CODE", m."STICKER_BGCOLOR", m."STICKER_COLOR", m."STICKER_TEXT", m."PILL_BGCOLOR", m."PILL_COLOR", m."PILL_TEXT", m."CART_MESSAGE", m."PROMOTION_CLASS", m."PRICELIST_CODE", m."START_DATE", m."END_DATE", m."VALUE", m."CURRENCY", m."SHOW_PRICE_STRIKE_THROUGH", m."SALE_KEYWORDS", (floor(((er.rn - 1) / 3000)::double precision))
+          GROUP BY m.event_id, m.page, m."pagePosition", m."offerId", m.offer_type_id, m."PROMOTION_CODE", m."STICKER_BGCOLOR", m."STICKER_COLOR", m."STICKER_TEXT", m."PILL_BGCOLOR", m."PILL_COLOR", m."PILL_TEXT", m."CART_MESSAGE", m."PROMOTION_CLASS", m."PRICELIST_CODE", m."START_DATE", m."END_DATE", m."VALUE", m."CURRENCY", m."SHOW_PRICE_STRIKE_THROUGH", m."SALE_KEYWORDS", (floor(((er.rn - 1) / 2000)::double precision))
         ), unchanged AS (
          SELECT base.event_id,
             base.page,

@@ -8,9 +8,9 @@ LANGUAGE 'plpgsql'
 AS $BODY$
 DECLARE
     v_row_count INTEGER;
-    v_timestamp TIMESTAMP := (NOW() AT TIME ZONE 'Australia/Sydney');
+    v_timestamp TIMESTAMP := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
     v_log_id BIGINT;
-    v_start_time TIMESTAMPTZ := (NOW() AT TIME ZONE 'Australia/Sydney');
+    v_start_time TIMESTAMPTZ := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
     v_end_time TIMESTAMPTZ;
     v_duration_ms BIGINT;
 BEGIN
@@ -27,6 +27,7 @@ BEGIN
         --------------------------------------------------------------------
         IF EXISTS (SELECT 1 FROM public."tIicePartDesc_temp") THEN
 
+
         DELETE FROM public."tIicePartDesc_temp" t
         USING (
             SELECT "partId", MIN(ctid) AS keep_ctid
@@ -42,6 +43,7 @@ BEGIN
 
         -- CHANGE: Truncate table instead of upsert
         TRUNCATE TABLE public."tIicePartDesc";
+        ANALYZE public."tIicePartDesc_temp";
 
         INSERT INTO public."tIicePartDesc" (
             "partId", country, sku,
@@ -62,6 +64,8 @@ BEGIN
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
         RAISE NOTICE 'tIicePartDesc: % rows inserted', v_row_count;
+	ANALYZE public."tIicePartDesc";
+
         ELSE
             RAISE NOTICE 'tIicePartDesc_temp is empty - skipping';
         END IF;
@@ -71,8 +75,10 @@ BEGIN
         --------------------------------------------------------------------
         IF EXISTS (SELECT 1 FROM public."tNationalAverageCost_temp") THEN
 
+
         -- CHANGE: Truncate table instead of upsert
         TRUNCATE TABLE public."tNationalAverageCost";
+        ANALYZE public."tNationalAverageCost_temp";
 
         INSERT INTO public."tNationalAverageCost" (
             country, sku, company,
@@ -93,6 +99,8 @@ BEGIN
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
         RAISE NOTICE 'NationalAverageCost: % rows inserted', v_row_count;
+	ANALYZE public."tNationalAverageCost";
+
         ELSE
             RAISE NOTICE 'tNationalAverageCost_temp is empty - skipping';
         END IF;
@@ -102,8 +110,10 @@ BEGIN
         --------------------------------------------------------------------
         IF EXISTS (SELECT 1 FROM public."tSupplier_temp") THEN
 
+
         -- CHANGE: Truncate table instead of upsert
         TRUNCATE TABLE public."tSupplier";
+        ANALYZE public."tSupplier_temp";
 
         INSERT INTO public."tSupplier" (
             "supplierId", country, "supplierName",
@@ -121,6 +131,8 @@ BEGIN
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
         RAISE NOTICE 'Supplier: % rows inserted', v_row_count;
+	ANALYZE public."tSupplier";
+
         ELSE
             RAISE NOTICE 'tSupplier_temp is empty - skipping';
         END IF;
@@ -130,8 +142,10 @@ BEGIN
         --------------------------------------------------------------------
         IF EXISTS (SELECT 1 FROM public."tVendorItemDetail_temp") THEN
 
+
         -- CHANGE: Truncate table instead of upsert
         TRUNCATE TABLE public."tVendorItemDetail";
+        ANALYZE public."tVendorItemDetail_temp";
 
         INSERT INTO public."tVendorItemDetail" (
             "distributionCenter", "supplierId", sku,
@@ -154,6 +168,8 @@ BEGIN
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
         RAISE NOTICE 'VendorItemDetail: % rows inserted', v_row_count;
+	ANALYZE  public."tVendorItemDetail";
+
         ELSE
             RAISE NOTICE 'tVendorItemDetail_temp is empty - skipping';
         END IF;
@@ -163,8 +179,10 @@ BEGIN
         --------------------------------------------------------------------
         IF EXISTS (SELECT 1 FROM public."tItemClass_temp") THEN
 
+
         -- CHANGE: Truncate table instead of upsert
         TRUNCATE TABLE public."tItemClass";
+        ANALYZE public."tItemClass_temp";
 
         INSERT INTO public."tItemClass" (
             "itemClass1","itemClass2","itemClass3","itemClass4",
@@ -183,6 +201,8 @@ BEGIN
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
         RAISE NOTICE 'ItemClass: % rows inserted', v_row_count;
+	ANALYZE public."tItemClass";
+
         ELSE
             RAISE NOTICE 'tItemClass_temp is empty - skipping';
         END IF;
@@ -192,8 +212,10 @@ BEGIN
         --------------------------------------------------------------------
         IF EXISTS (SELECT 1 FROM public."tItemLoadings_temp") THEN
 
+
         -- CHANGE: Truncate table instead of upsert
         TRUNCATE TABLE public."tItemLoadings";
+        ANALYZE public."tItemLoadings_temp";
 
         INSERT INTO public."tItemLoadings" (
             "supplierId", sku, "itemClass", country,
@@ -209,6 +231,8 @@ BEGIN
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
         RAISE NOTICE 'ItemLoadings: % rows inserted', v_row_count;
+	ANALYZE public."tItemLoadings";
+
         ELSE
             RAISE NOTICE 'tItemLoadings_temp is empty - skipping';
         END IF;
@@ -218,8 +242,10 @@ BEGIN
         --------------------------------------------------------------------
         IF EXISTS (SELECT 1 FROM public."tProductSupplierCost_temp") THEN
 
+
         -- CHANGE: Truncate table instead of upsert
         TRUNCATE TABLE public."tProductSupplierCost";
+        ANALYZE public."tProductSupplierCost_temp";
 
         INSERT INTO public."tProductSupplierCost" (
             country,
@@ -272,12 +298,14 @@ BEGIN
 
         GET DIAGNOSTICS v_row_count = ROW_COUNT;
         RAISE NOTICE 'ProductSupplierCost: % rows inserted', v_row_count;
+	ANALYZE public."tProductSupplierCost";
+
         ELSE
             RAISE NOTICE 'tProductSupplierCost_temp is empty - skipping';
         END IF;
 
         -- Calculate duration and log successful completion
-        v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+        v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
         v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000;
 
         UPDATE execution_log
@@ -290,7 +318,7 @@ BEGIN
 
     EXCEPTION WHEN OTHERS THEN
         -- Log failure
-        v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+        v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
         v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000;
 
         UPDATE execution_log

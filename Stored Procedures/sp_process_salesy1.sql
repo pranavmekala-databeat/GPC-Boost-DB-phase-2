@@ -8,9 +8,9 @@ LANGUAGE 'plpgsql'
 AS $BODY$
     DECLARE
         v_row_count INTEGER;
-        v_timestamp TIMESTAMP := (NOW() AT TIME ZONE 'Australia/Sydney');
+        v_timestamp TIMESTAMP := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
         v_log_id BIGINT;
-        v_start_time TIMESTAMPTZ := (NOW() AT TIME ZONE 'Australia/Sydney');
+        v_start_time TIMESTAMPTZ := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
         v_end_time TIMESTAMPTZ;
         v_duration_ms BIGINT;
     BEGIN
@@ -25,8 +25,12 @@ AS $BODY$
             -- Skip the entire process when the source temp table is empty (no action taken)
             IF EXISTS (SELECT 1 FROM public."tSalesY1_temp") THEN
 
+
             -- CHANGE: Truncate table instead of upsert
             TRUNCATE TABLE public."tSalesY1";
+            -- Refresh source stats (temp + the joined tProducts) so the heavy INSERT ... SELECT plans correctly
+            ANALYZE public."tSalesY1_temp";
+            ANALYZE public."tProducts";
 
             --------------------------------------------------------------------
             -- Step 1: Deduplicate temp data
@@ -645,13 +649,14 @@ AS $BODY$
 
             GET DIAGNOSTICS v_row_count = ROW_COUNT;
             RAISE NOTICE 'tSalesY1: % rows inserted', v_row_count;
+	    ANALYZE public."tSalesY1";
 
             ELSE
                 RAISE NOTICE 'tSalesY1_temp is empty - skipping (no action taken)';
             END IF;
 
             -- Calculate duration and log successful completion
-            v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+            v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
             v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000;
 
             UPDATE execution_log
@@ -664,7 +669,7 @@ AS $BODY$
 
         EXCEPTION WHEN OTHERS THEN
             -- Log failure
-            v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+            v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
             v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000;
 
             UPDATE execution_log

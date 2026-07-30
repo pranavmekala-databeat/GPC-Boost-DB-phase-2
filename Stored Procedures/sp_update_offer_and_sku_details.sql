@@ -6,7 +6,22 @@ CREATE OR REPLACE PROCEDURE public.sp_update_offer_and_sku_details(
 	)
 LANGUAGE 'plpgsql'
 AS $BODY$
+DECLARE
+    v_start_time timestamptz;
+    v_end_time   timestamptz;
+    v_log_id     bigint;
+    v_job_name   text := 'sp_update_offer_and_sku_details';
 BEGIN
+    -- Run in Australia/Sydney time
+    SET LOCAL TIME ZONE 'Australia/Sydney';
+
+    -- Start log
+    v_start_time := clock_timestamp();
+
+    INSERT INTO execution_log (job_name, status, start_time)
+    VALUES (v_job_name, 'STARTED', v_start_time)
+    RETURNING id INTO v_log_id;
+
     -------------------------------------------------------------------------
     -- Step 1: Deactivate products that are no longer eligible.
     -- A product is deactivated when:
@@ -83,7 +98,8 @@ BEGIN
          "tProducts" p
     WHERE ev."eventId" = eod."eventId"
       AND p."sku" = eod."sku"
-      AND p."isActive" = FALSE;
+      AND p."isActive" = FALSE
+      AND eod."isSkuActive" = TRUE;
 	RAISE NOTICE 'Finished updating tEventOfferDetail (Deactivate SKUs) at: %', clock_timestamp();
     -------------------------------------------------------------------------
     -- Step 4: Reactivate SKU records whose products are active again.
@@ -212,5 +228,28 @@ BEGIN
       AND eo."isOfferActive" = FALSE;
  
 	RAISE NOTICE 'Finished updating tEventOfferDetail (Reset Page Position) at: %', clock_timestamp();
+
+    v_end_time := clock_timestamp();
+
+    UPDATE execution_log
+    SET status      = 'SUCCESS',
+        end_time    = v_end_time,
+        duration_ms = (EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000)::bigint
+    WHERE id = v_log_id;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        v_end_time := clock_timestamp();
+
+        RAISE LOG 'sp_update_offer_and_sku_details_Failed';
+
+        UPDATE execution_log
+        SET status      = 'FAILED',
+            end_time    = v_end_time,
+            duration_ms = (EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000)::bigint
+        WHERE id = v_log_id;
+
+        RAISE;
+
 END;
 $BODY$;

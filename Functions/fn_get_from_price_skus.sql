@@ -64,7 +64,7 @@ AS $BODY$
 				AND eod."advertisedPriceGst" >= 1
                 AND inv."onHand" > 0
                 AND (p."clearance" IS NULL OR p."clearance" <> 'Y')
-                AND p."isSkuActive" = TRUE;
+                AND p."isActive" = TRUE;
           ELSE
               SELECT STRING_AGG(eod."sku", ',')
               INTO v_skuList

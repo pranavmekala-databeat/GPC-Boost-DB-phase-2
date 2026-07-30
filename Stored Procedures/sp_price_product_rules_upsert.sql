@@ -14,7 +14,7 @@ AS $BODY$
       -- CHANGE: Added variable to track inactive record count
       v_marked_inactive INT := 0;
       v_final_data_count INT := 0;
-      v_start_time TIMESTAMPTZ := NOW() AT TIME ZONE 'Australia/Sydney';
+      v_start_time TIMESTAMPTZ := clock_timestamp() AT TIME ZONE 'Australia/Sydney';
       v_end_time TIMESTAMPTZ;
   BEGIN
       -- Log start
@@ -25,6 +25,8 @@ AS $BODY$
 
       -- Skip the entire process when the source temp table is empty (no action taken)
       IF EXISTS (SELECT 1 FROM public."tPriceProductRules_temp") THEN
+
+      -- Capture whether temp holds BOTH AU and NZ before the DELETE below mutates it
 
       -- 1: Create indexes on temp table if not exist
       CREATE INDEX IF NOT EXISTS idx_temp_lookup
@@ -514,11 +516,12 @@ AS $BODY$
       DROP TABLE IF EXISTS temp_final_data;
       DROP TABLE IF EXISTS temp_final_data_dedup;
 
+
       ELSE
           RAISE INFO 'tPriceProductRules_temp is empty - skipping (no action taken)';
       END IF;
 
-      v_end_time := NOW() AT TIME ZONE 'Australia/Sydney';
+      v_end_time := clock_timestamp() AT TIME ZONE 'Australia/Sydney';
 
       -- Log end
       INSERT INTO execution_log(job_name, status, start_time, end_time, duration_ms)

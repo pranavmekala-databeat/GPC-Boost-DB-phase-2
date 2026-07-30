@@ -13,18 +13,21 @@ DECLARE
     v_country text;
     v_channel text;
     v_eventChannel text;
+    v_company text;
 BEGIN
     ------------------------------------------------------------------
     SELECT
         eh."startDate",
         eh."endDate",
         eh."country",
-        eh."channel"
+        eh."channel",
+        eh."company"
     INTO
         v_startdate,
         v_enddate,
         v_country,
-        v_eventChannel
+        v_eventChannel,
+        v_company
     FROM "tEventOffer" eoh
     JOIN "tEvent" eh ON eh."eventId" = eoh."eventId"
     WHERE eoh."offerId" = p_offerid
@@ -64,6 +67,9 @@ BEGIN
                 PARTITION BY pld."sku", pld."country",        -- added country
                 CASE
                     WHEN pld."priceList" = '050' THEN 'clearance'
+                    WHEN pld."priceList" = '184' THEN 'special_184'
+                    WHEN pld."priceList" = '499' THEN 'nz_clearance_499'
+                    WHEN pld."priceList" = '498' THEN 'nz_special_498'
                     WHEN pld."priceList" IN ('390','419','824','343','446','241') THEN 'au_primary'
                     WHEN pld."priceList" = '036' THEN 'au_fallback'
                     WHEN pld."priceList" IN ('371','274','211','044','134','021') THEN 'nz_primary'
@@ -73,14 +79,18 @@ BEGIN
             ) AS group_rn
         FROM "tPriceListDetail" pld
         INNER JOIN "tPriceList" pl ON pld."priceList" = pl."priceList"
-        WHERE pld."priceList" IN ('050','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
+        WHERE pld."priceList" IN ('050','184','499','498','390','419','824','343','446','241','036','371','274','211','044','134','021','492')
           AND pld."isActive"
+          AND pld.company = v_company
     ),
- 
+
     "pivoted_prices" AS (
         SELECT
             "sku","country",                                  -- added country
-            MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS clearance_price_050,
+            MAX(CASE WHEN "priceList" = '050' AND group_rn = 1 THEN "priceListPrice" END) AS priceList50,
+            MAX(CASE WHEN "priceList" = '184' AND group_rn = 1 THEN "priceListPrice" END) AS priceList184,
+            MAX(CASE WHEN "priceList" = '499' AND group_rn = 1 THEN "priceListPrice" END) AS priceList499,
+            MAX(CASE WHEN "priceList" = '498' AND group_rn = 1 THEN "priceListPrice" END) AS priceList498,
             MAX(CASE WHEN "priceList" IN ('390','419','824','343','446','241') AND group_rn = 1 THEN "priceListPrice" END) AS au_primary_price,
             MAX(CASE WHEN "priceList" = '036' AND group_rn = 1 THEN "priceListPrice" END) AS au_fallback_price_036,
             MAX(CASE WHEN "priceList" IN ('371','274','211','044','134','021') AND group_rn = 1 THEN "priceListPrice" END) AS nz_primary_price,
@@ -104,6 +114,7 @@ BEGIN
             v_gst AS gst_value,
  
             ppr."pricePoint6",
+            ppr."pricePoint6IncludingGst",
  
             p."vendorCostPerEach",
             p."nationalAvgCost",
@@ -113,12 +124,15 @@ BEGIN
             COALESCE(SUM(CASE WHEN UPPER(inv."locationType") = 'STORE' THEN inv."onHand" END), 0) AS sohStore,
             COALESCE(SUM(CASE WHEN UPPER(inv."locationType") <> 'STORE' THEN inv."onHand" END), 0) AS sohDc,
  
-            pp.clearance_price_050,
+            pp.priceList50,
+            pp.priceList184,
+            pp.priceList499,
+            pp.priceList498,
             pp.au_primary_price,
             pp.au_fallback_price_036,
             pp.nz_primary_price,
             pp.nz_fallback_price_492
- 
+
         FROM "tEventOfferDetail" d
         INNER JOIN "tEventOffer" eoh
             ON d."offerId" = eoh."offerId"
@@ -150,11 +164,15 @@ BEGIN
             eh."endDate", eh."startDate",
             v_channel, v_gst,
             ppr."pricePoint6",
+            ppr."pricePoint6IncludingGst",
             p."vendorCostPerEach", p."nationalAvgCost",
             p."isActive",
             p."clearance",
             eh."country",
-            pp.clearance_price_050,
+            pp.priceList50,
+            pp.priceList184,
+            pp.priceList499,
+            pp.priceList498,
             pp.au_primary_price,
             pp.au_fallback_price_036,
             pp.nz_primary_price,
@@ -165,30 +183,53 @@ BEGIN
         SELECT
             d.*,
             CASE
-                WHEN d."clearance" = 'Y' THEN
-                    Round(COALESCE(d.clearance_price_050,0),2)
-                    
-
-                WHEN d."clearance" <> 'Y' AND d."country" = 'AU' THEN
+                -- Special pricing: price lists 050 and/or 184, applied to every row (no clearance gate).
+                -- RRP per country: special (LEAST) -> primary -> fallback -> pricePoint6 (rounded)
+                WHEN d."country" = 'AU' THEN
                     CASE
+                        WHEN LEAST(d.priceList50, d.priceList184) IS NOT NULL THEN
+                            LEAST(d.priceList50, d.priceList184)
                         WHEN d.au_primary_price IS NOT NULL THEN
-                           Round(d.au_primary_price,2)   
+                            d.au_primary_price
                         WHEN d.au_fallback_price_036 IS NOT NULL THEN
-                          Round(d.au_fallback_price_036,2)
+                            d.au_fallback_price_036
                         ELSE
-                            ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)
+                            ROUND(
+                                CASE
+                                    WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 1 THEN
+                                        CEILING((ROUND(d."pricePoint6IncludingGst", 2)) * 10) / 10.0
+                                    WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 10 THEN
+                                        CASE WHEN ((ROUND(d."pricePoint6IncludingGst", 2)) - FLOOR(ROUND(d."pricePoint6IncludingGst", 2))) > 0.5
+                                             THEN CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                                             ELSE FLOOR(ROUND(d."pricePoint6IncludingGst", 2))
+                                        END
+                                    ELSE CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                                END, 2
+                            )
                     END
-
-                WHEN d."clearance" <> 'Y' AND d."country" = 'NZ' THEN
+                WHEN d."country" = 'NZ' THEN
                     CASE
+                        WHEN LEAST(d.priceList499, d.priceList498) IS NOT NULL THEN
+                            LEAST(d.priceList499, d.priceList498)
                         WHEN d.nz_primary_price IS NOT NULL THEN
-                            ROUND(d.nz_primary_price, 2)
+                            d.nz_primary_price
                         WHEN d.nz_fallback_price_492 IS NOT NULL THEN
-                            ROUND(d.nz_fallback_price_492, 2)
+                            d.nz_fallback_price_492
                         ELSE
-                        ROUND(d."pricePoint6"* (1 + COALESCE(d.gst_value, 0)), 2)  
+                            ROUND(
+                                CASE
+                                    WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 1 THEN
+                                        CEILING((ROUND(d."pricePoint6IncludingGst", 2)) * 10) / 10.0
+                                    WHEN (ROUND(d."pricePoint6IncludingGst", 2)) < 10 THEN
+                                        CASE WHEN ((ROUND(d."pricePoint6IncludingGst", 2)) - FLOOR(ROUND(d."pricePoint6IncludingGst", 2))) > 0.5
+                                             THEN CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                                             ELSE FLOOR(ROUND(d."pricePoint6IncludingGst", 2))
+                                        END
+                                    ELSE CEILING(ROUND(d."pricePoint6IncludingGst", 2))
+                                END, 2
+                            )
                     END
-            END AS base_rrp_price
+                END AS base_rrp_price
         FROM data d
     )
     UPDATE "tEventOfferDetail" e

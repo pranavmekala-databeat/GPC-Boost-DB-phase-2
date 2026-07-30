@@ -14,7 +14,7 @@ DECLARE
     v_temp_count   INTEGER := 0;
     v_step_time    TIMESTAMP;
     v_log_id BIGINT;
-    v_start_time_log TIMESTAMPTZ := (NOW() AT TIME ZONE 'Australia/Sydney');
+    v_start_time_log TIMESTAMPTZ := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
     v_end_time TIMESTAMPTZ;
     v_duration_ms BIGINT;
 BEGIN
@@ -42,7 +42,7 @@ BEGIN
         RAISE NOTICE 'No data to process. Exiting.';
 
         -- Log completion even if no data to process
-        v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+        v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
         v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time_log)) * 1000;
 
         UPDATE execution_log
@@ -53,6 +53,8 @@ BEGIN
 
         RETURN;
     END IF;
+
+    -- Capture whether temp holds BOTH AU and NZ before processing
 
     -------------------------------------------------------------------
     -- STEP 2: Build normalized temp table
@@ -668,6 +670,7 @@ ROW(
     -------------------------------------------------------------------
     DROP TABLE IF EXISTS temp_products_normalized;
 
+
     RAISE NOTICE '========================================';
     RAISE NOTICE 'sp_products_upsert completed successfully';
     RAISE NOTICE 'Total rows affected: %', v_insert_count;
@@ -678,7 +681,7 @@ ROW(
     RAISE NOTICE '========================================';
 
     -- Calculate duration and log successful completion
-    v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+    v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
     v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time_log)) * 1000;
 
     UPDATE execution_log
@@ -692,7 +695,7 @@ ROW(
 EXCEPTION
     WHEN OTHERS THEN
         -- Log failure
-        v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+        v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
         v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time_log)) * 1000;
 
         UPDATE execution_log

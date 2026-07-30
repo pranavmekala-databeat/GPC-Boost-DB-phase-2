@@ -11,9 +11,9 @@ AS $BODY$
       -- CHANGE: Added variables to track inactive record counts
       v_pricelist_inactive INTEGER := 0;
       v_pricelistdetail_inactive INTEGER := 0;
-      v_timestamp TIMESTAMP := (NOW() AT TIME ZONE 'Australia/Sydney');
+      v_timestamp TIMESTAMP := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
       v_log_id BIGINT;
-      v_start_time TIMESTAMPTZ := (NOW() AT TIME ZONE 'Australia/Sydney');
+      v_start_time TIMESTAMPTZ := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
       v_end_time TIMESTAMPTZ;
       v_duration_ms BIGINT;
   BEGIN
@@ -32,6 +32,8 @@ AS $BODY$
       IF EXISTS (SELECT 1 FROM public."tCatalogueSales_temp") THEN
 
           TRUNCATE TABLE public."tCatalogueSales";
+          -- Refresh source stats so the INSERT ... SELECT plans correctly
+          ANALYZE public."tCatalogueSales_temp";
 
           WITH deduped AS (
               SELECT
@@ -56,6 +58,8 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tCatalogueSales: % rows inserted', v_row_count;
+	  ANALYZE public."tCatalogueSales";
+
       ELSE
           RAISE NOTICE 'tCatalogueSales: temp is empty - skipping';
       END IF;
@@ -68,6 +72,7 @@ AS $BODY$
       IF EXISTS (SELECT 1 FROM public."tCatalogueSalesHeader_temp") THEN
 
           TRUNCATE TABLE public."tCatalogueSalesHeader";
+          ANALYZE public."tCatalogueSalesHeader_temp";
 
           INSERT INTO public."tCatalogueSalesHeader" (
               "eventId", company, "eventDescription", "eventType",
@@ -95,6 +100,8 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tCatalogueSalesHeader: % rows inserted', v_row_count;
+    	  ANALYZE public."tCatalogueSalesHeader";
+
       ELSE
           RAISE NOTICE 'tCatalogueSalesHeader: temp is empty - skipping';
       END IF;
@@ -106,7 +113,9 @@ AS $BODY$
 
       IF EXISTS (SELECT 1 FROM public."tInventory_temp") THEN
 
+
           TRUNCATE TABLE public."tInventory";
+          ANALYZE public."tInventory_temp";
 
           INSERT INTO public."tInventory" (
               company, "locationType", sku,
@@ -126,6 +135,8 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tInventory: % rows inserted', v_row_count;
+	  ANALYZE public."tInventory";
+
       ELSE
           RAISE NOTICE 'tInventory: temp is empty - skipping';
       END IF;
@@ -137,7 +148,9 @@ AS $BODY$
 
       IF EXISTS (SELECT 1 FROM public."tLocation_temp") THEN
 
+
           TRUNCATE TABLE public."tLocation";
+          ANALYZE public."tLocation_temp";
 
           INSERT INTO public."tLocation" (
               location, "locationName", company, "locationType",
@@ -158,6 +171,8 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tLocation: % rows inserted', v_row_count;
+	  ANALYZE public."tLocation";
+
       ELSE
           RAISE NOTICE 'tLocation: temp is empty - skipping';
       END IF;
@@ -168,6 +183,7 @@ AS $BODY$
       RAISE NOTICE 'Processing tPriceList...';
 
       IF EXISTS (SELECT 1 FROM public."tPriceList_temp") THEN
+
 
           DELETE FROM public."tPriceList_temp" t
           USING (
@@ -252,6 +268,7 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tPriceList: % rows upserted', v_row_count;
+
       ELSE
           RAISE NOTICE 'tPriceList: temp is empty - skipping';
       END IF;
@@ -262,6 +279,7 @@ AS $BODY$
       RAISE NOTICE 'Processing tPriceListDetail...';
 
       IF EXISTS (SELECT 1 FROM public."tPriceListDetail_temp") THEN
+
 
           UPDATE public."tPriceListDetail"
           SET "isActive" = FALSE,
@@ -333,6 +351,7 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tPriceListDetail: % rows upserted', v_row_count;
+
       ELSE
           RAISE NOTICE 'tPriceListDetail: temp is empty - skipping';
       END IF;
@@ -343,6 +362,7 @@ AS $BODY$
       RAISE NOTICE 'Processing tPriceProfile...';
 
       IF EXISTS (SELECT 1 FROM public."tPriceProfile_temp") THEN
+
 
           TRUNCATE TABLE public."tPriceProfile";
 
@@ -363,6 +383,9 @@ AS $BODY$
               SELECT 1 FROM "tPriceProfile_temp"
               WHERE company='85' AND "priceProfile"='RET1B' AND country='NZ'
           );
+
+          -- Refresh source stats (after the temp edits above) so the dedup INSERT plans correctly
+          ANALYZE public."tPriceProfile_temp";
 
           -- Use ROW_NUMBER() to deduplicate
           WITH ranked AS (
@@ -389,6 +412,8 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tPriceProfile: % rows inserted', v_row_count;
+   	  ANALYZE public."tPriceProfile";
+
       ELSE
           RAISE NOTICE 'tPriceProfile: temp is empty - skipping';
       END IF;
@@ -400,7 +425,9 @@ AS $BODY$
 
       IF EXISTS (SELECT 1 FROM public."tSalesY2_temp") THEN
 
+
           TRUNCATE TABLE public."tSalesY2";
+          ANALYZE public."tSalesY2_temp";
 
           WITH dedup AS (
               SELECT t.ctid,
@@ -440,6 +467,8 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tSalesY2: % rows inserted', v_row_count;
+	  ANALYZE public."tSalesY2";
+
       ELSE
           RAISE NOTICE 'tSalesY2: temp is empty - skipping';
       END IF;
@@ -451,7 +480,9 @@ AS $BODY$
 
       IF EXISTS (SELECT 1 FROM public."tStockCover_temp") THEN
 
+
           TRUNCATE TABLE public."tStockCover";
+          ANALYZE public."tStockCover_temp";
 
           INSERT INTO public."tStockCover" (
               company, sku,
@@ -478,6 +509,8 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tStockCover: % rows inserted', v_row_count;
+	  ANALYZE public."tStockCover";
+
       ELSE
           RAISE NOTICE 'tStockCover: temp is empty - skipping';
       END IF;
@@ -489,7 +522,9 @@ AS $BODY$
 
       IF EXISTS (SELECT 1 FROM public."tCompanyItem_temp") THEN
 
+
           TRUNCATE TABLE public."tCompanyItem";
+          ANALYZE public."tCompanyItem_temp";
 
           INSERT INTO public."tCompanyItem" (
               company, sku, country, "createdAt", "updatedAt"
@@ -499,12 +534,14 @@ AS $BODY$
 
           GET DIAGNOSTICS v_row_count = ROW_COUNT;
           RAISE NOTICE 'tCompanyItem: % rows inserted', v_row_count;
+	  ANALYZE public."tCompanyItem";
+
       ELSE
           RAISE NOTICE 'tCompanyItem: temp is empty - skipping';
       END IF;
 
       -- Calculate duration and log successful completion
-      v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+      v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
       v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000;
 
       UPDATE execution_log
@@ -521,7 +558,7 @@ AS $BODY$
   EXCEPTION
       WHEN OTHERS THEN
           -- Log failure
-          v_end_time := (NOW() AT TIME ZONE 'Australia/Sydney');
+          v_end_time := (clock_timestamp() AT TIME ZONE 'Australia/Sydney');
           v_duration_ms := EXTRACT(EPOCH FROM (v_end_time - v_start_time)) * 1000;
 
           UPDATE execution_log
