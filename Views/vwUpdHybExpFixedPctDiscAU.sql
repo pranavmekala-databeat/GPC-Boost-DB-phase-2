@@ -121,7 +121,7 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscAU"
                     ELSE eo."pagePosition"
                 END, 'I', eo."commercialOfferItemClass1", 'OT', ot."offerTypeId"::character varying(4), 'PO', 'P', round(eod."advertisedPriceGst"::numeric, 2)::numeric(19,2)::character varying(50), 'V', 1) AS "PROMOTION_CODE",
                 CASE
-                    WHEN eo."isNew" = true THEN '#009546'::character varying
+                    WHEN eo."isNew" = true THEN '#018a5c'::character varying
                     WHEN hst."hybrisStickerText" IS NOT NULL THEN hst."hybrisStickerBackgroundColor"
                     ELSE ot."hybrisDefaultStickerBackgroundColor"
                 END AS "STICKER_BGCOLOR",
@@ -136,7 +136,7 @@ CREATE OR REPLACE VIEW public."vwUpdHybExpFixedPctDiscAU"
                     ELSE ot."hybrisDefaultStickerText"
                 END AS "STICKER_TEXT",
                 CASE
-                    WHEN eo."isNew" = true THEN '#009546'::character varying
+                    WHEN eo."isNew" = true THEN '#018a5c'::character varying
                     ELSE ot."hybrisPillBackgroundColor"
                 END AS "PILL_BGCOLOR",
                 CASE
